@@ -31,7 +31,6 @@ from companion_v2.execution.service import outcome
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import OperationRef, ScopeKind, VersionRef
 from companion_v2.identity_policy.personas import RuntimeIdentity
-from companion_v2.conversation.content.authoring_tasks import authoring_profiles
 from companion_v2.identity_policy.repository import PersistentIdentityDirectory
 from companion_v2.model_gateway.budget import BudgetSoftPolicy
 from companion_v2.model_gateway.models import BudgetPolicy, ModelTaskProfile
@@ -46,7 +45,6 @@ from companion_v2.role_work.growth.progress import growth_progress_profile
 from companion_v2.role_work.journal.self_review_service import self_review_profile
 from companion_v2.expression.style_service import expression_learning_profile
 from companion_v2.expression.review import expression_review_profile
-from companion_v2.screen.interpretation import screen_interpretation_profile
 from companion_v2.conversation.media.image_narration import image_narration_profile
 from companion_v2.conversation.media.video.narration import video_narration_profile
 from companion_v2.conversation.media.understanding import intake_settings as file_intake_settings
@@ -293,9 +291,8 @@ class AstrBotStagingSession:
                     expression_learning_profile(profile.provider_id, max_output_tokens=profile.max_output_tokens),
                     expression_review_profile(profile.provider_id, max_output_tokens=profile.max_output_tokens),
                     expression_review_profile(profile.provider_id, max_output_tokens=profile.max_output_tokens, contact=True),
-                    screen_interpretation_profile(profile.provider_id), *narration_profiles,
-                    *native_video_profiles) + self.writing_profiles + (self.reading_profile,) + authoring_profiles(
-                        profile.provider_id, draft_tokens=profile.max_output_tokens)
+                    *narration_profiles,
+                    *native_video_profiles) + self.writing_profiles + (self.reading_profile,)
         registry_fields = configuration_fields(profiles)
         registry_ids = {item.field_id for item in registry_fields}
         registry_fields += tuple(field for field in relay_configuration_fields()

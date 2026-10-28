@@ -61,8 +61,6 @@ from ..relationships.profile import (FIELD_LIMITS as RELATIONSHIP_PROFILE_FIELD_
     target_for as relationship_profile_target_for)
 from ..role_work.life.configuration import (GROUP as LIFE_GROUP, OWNER as LIFE_OWNER, SLEEP_FIELDS,
     configuration_fields as life_fields)
-from ..screen.configuration import (GROUP as SCREEN_GROUP, OWNER as SCREEN_OWNER,
-    configuration_fields as screen_fields)
 from ..qzone.configuration import (GROUP as QZONE_GROUP, OWNER as QZONE_OWNER,
     configuration_fields as qzone_fields)
 from ..library.configuration import (GROUP as LIBRARY_GROUP, OWNER as LIBRARY_OWNER,
@@ -73,8 +71,6 @@ from ..references.wardrobe import (GROUP as WARDROBE_GROUP, OWNER as WARDROBE_OW
     configuration_fields as wardrobe_fields)
 from ..proactive.configuration import (GROUP as CONTACT_GROUP, WINDOW_QUOTA_FIELDS,
     configuration_fields as contact_fields)
-from ..conversation.content.authoring_service import (GROUP as AUTHORING_GROUP,
-    configuration_fields as authoring_fields)
 
 from .service import ConfigurationService
 
@@ -236,11 +232,6 @@ class GroupEditor:
         return result
 
 
-class ImageOutputManagement(GroupEditor):
-    group = IMAGE_OUTPUT_GROUP
-    owner = IMAGE_OUTPUT_OWNER
-    layers = (ConfigLayer.INSTALLATION, ConfigLayer.ROLE)
-    error_prefix = "image_output"
 
 
 class ImageQuotaManagement(GroupEditor):
@@ -313,12 +304,6 @@ class RelayManagement(GroupEditor):
     error_prefix = "relay"
 
 
-class ScreenManagement(GroupEditor):
-    """Whether screen captures may be interpreted and reused as diary material."""
-
-    group, owner = SCREEN_GROUP, SCREEN_OWNER
-    layers = screen_fields()[0].layers
-    error_prefix = "screen"
 
 
 class QzoneManagement(GroupEditor):
@@ -334,13 +319,6 @@ class QzoneManagement(GroupEditor):
     error_prefix = "qzone"
 
 
-class ContentAuthoringManagement(GroupEditor):
-    """Role-level direction and availability for native Content creation."""
-
-    group = AUTHORING_GROUP
-    owner = ConfigurationService.OWNER
-    layers = authoring_fields()[0].layers
-    error_prefix = "content_authoring"
 
 
 class AcquaintanceManagement(GroupEditor):

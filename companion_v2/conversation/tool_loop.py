@@ -71,7 +71,7 @@ def specification(action, required, optional=(), description="Use the original r
 
 class LocalRoleTools:
     def __init__(self, messages, *, diagnostics=None, agenda=True, external=None, memory=None, growth=None, timeline=None, calendar=None,
-                 relationships=None, weather_port=None, role_state=None, authoring=None, web_search_factory=None):
+                 relationships=None, weather_port=None, role_state=None, web_search_factory=None):
         if messages.tools is not None:
             raise ValueError("a message owner may have only one local tool owner registry")
         if type(agenda) is not bool or (diagnostics is not None and diagnostics.runtime is not messages.runtime):
@@ -106,9 +106,6 @@ class LocalRoleTools:
         if external is not None and external.messages is not messages:
             raise ValueError("external tools must attach to the original message owner")
         self.external = external
-        if authoring is not None and authoring.runtime is not self.runtime:
-            raise ValueError("Content authoring must share the original runtime")
-        self.authoring = authoring
         if diagnostics is not None:
             from .diagnostic_tools import diagnostic_tool_specs
             diagnostic_specs = diagnostic_tool_specs(diagnostics)
@@ -271,7 +268,6 @@ class LocalRoleTools:
         # 里没有记忆动作，构造期加进 self.catalog 的那几个就会从 base 漏给模型。
         memory_actions = set(self.memory.actions) if self.memory is not None else set()
         filtered = (memory_actions | set(self.external.actions if self.external else ())
-                    | set(self.authoring.actions if self.authoring else ())
                     | set(self.growth.actions if self.growth else ()) | set(self.timeline.actions if self.timeline else ())
                     | set(self.calendar.actions if self.calendar else ())
                     | set(self.weather.actions)
@@ -288,8 +284,6 @@ class LocalRoleTools:
                 external_filter_reasons.update({item["action"]: item["reason"] for item in filtered})
         else:
             external = ()
-        authoring = (self.authoring.catalog_for(context, {tool.action for tool in external})
-                     if self.authoring is not None else ())
         return (semantic + base
                 + self.acquaintance.catalog_for(context)
                 + (memory.catalog_for(context) if memory else ())
@@ -299,7 +293,7 @@ class LocalRoleTools:
                 + self.weather.catalog_for(context)
                 + self.web.catalog_for(context)
                 + (self.relationships.catalog_for(context) if self.relationships else ())
-                + external + authoring)
+                + external)
 
     def refresh_history(self, batch, context, request, history, at):
         if context.scope.kind is ScopeKind.GROUP:
@@ -468,8 +462,6 @@ class LocalRoleTools:
             return self.web.validate(row, context, result, at)
         if action in self.acquaintance.actions:
             return self.acquaintance.validate(row, context, result)
-        if self.authoring is not None and action in self.authoring.actions:
-            return self.authoring.validate_result(row, context, result, self.external, at)
         if action in TOOL_FIELDS:
             if not self.agenda:
                 raise TaskError("tool_owner_unavailable", "original agenda owner is not registered")
@@ -558,9 +550,6 @@ class LocalRoleTools:
         if self.diagnostics is not None:
             from .diagnostic_tools import DIAGNOSTIC_INSTRUCTION
             instructions += DIAGNOSTIC_INSTRUCTION
-        if self.authoring is not None and self.external is not None:
-            instructions += self.authoring.instruction_for(
-                context, {tool.action for tool in self.external.catalog_for(context)})
         # 与工具目录同一道门：只有这一轮真的能发空间时，主题与场景目录才进提示词。
         # 目录本身是固定的判断依据（如何判断、何时发布、如何处理来源），分类由模型
         # 依据它完成；这里不解读任何具体词句。
@@ -673,8 +662,6 @@ class LocalRoleTools:
         return request, None, rows
 
     def _effectful(self, action):
-        if self.authoring is not None and action in self.authoring.actions:
-            return True
         if self.semantic is not None and action in self.semantic.actions:
             return action == "slang.learn"
         if action in self.acquaintance.actions:
@@ -745,44 +732,6 @@ class LocalRoleTools:
                     (stamp(self.tasks.now()), run.task.task_id, call.call_id))
             raise
 
-    async def _execute_authoring(self, run, model_call_id, call):
-        request, old, _ = self._prepare(run, model_call_id, call)
-        if old is not None:
-            result, _ = self._validate_result(old, request, run.task.spec.context, self.tasks.now())
-            return ToolExchange(call, encode(result))
-        try:
-            prompt = self.messages.request(run, include_tools=False)
-            result = await self.authoring.execute(run, call, model_call_id, prompt, self.external)
-            run.validate()
-            encoded = encode(result)
-            with self.runtime.transaction() as connection:
-                run.validate()
-                connection.execute("""UPDATE conversation_tool_calls
-                    SET state='succeeded',effect=?,result_json=?,finished_at=?
-                    WHERE task_id=? AND tool_call_id=? AND state='started'""",
-                    (result["effect"], encoded, stamp(self.tasks.now()), run.task.task_id, call.call_id))
-            return ToolExchange(call, encoded)
-        except TaskError as error:
-            children = self.runtime.read_all("""SELECT action,state,effect FROM extension_tool_invocations
-                WHERE parent_task_id=? AND tool_call_id LIKE 'content-authoring-subcall:%'""",
-                (run.task.task_id,))
-            mutation = next((row for row in reversed(children)
-                if row["action"] in ("content.work.create", "content.work.save_candidate")), None)
-            unresolved = mutation is not None and mutation["state"] in ("queued", "running", "unknown", "succeeded")
-            result = {"state": "unknown" if unresolved else "failed", "code": error.code,
-                      "effect": "unknown" if unresolved else "not_committed"}
-            with self.runtime.transaction() as connection:
-                connection.execute("""UPDATE conversation_tool_calls SET state=?,effect=?,result_json=?,finished_at=?
-                    WHERE task_id=? AND tool_call_id=? AND state='started'""",
-                    (result["state"], result["effect"], encode(result), stamp(self.tasks.now()),
-                     run.task.task_id, call.call_id))
-            return ToolExchange(call, encode(result))
-        except BaseException:
-            with self.runtime.transaction() as connection:
-                connection.execute("""UPDATE conversation_tool_calls SET state='unknown',effect='unknown',finished_at=?
-                    WHERE task_id=? AND tool_call_id=? AND state='started'""",
-                    (stamp(self.tasks.now()), run.task.task_id, call.call_id))
-            raise
 
     async def execute_async(self, run, model_call_id: str, call: ToolCall) -> ToolExchange:
         if call.action in self.weather.actions:
@@ -835,8 +784,6 @@ class LocalRoleTools:
                                         if updated.rowcount:
                                             exchange = ToolExchange(call, encoded)
                 return exchange
-        if self.authoring is not None and call.action in self.authoring.actions:
-            return await self._execute_authoring(run, model_call_id, call)
         if self.external is None or call.action not in self.external.actions:
             return self.execute(run, model_call_id, call)
         if run.task.spec.context.scope.kind is ScopeKind.GROUP and call.action not in GROUP_EXTERNAL_ACTIONS:

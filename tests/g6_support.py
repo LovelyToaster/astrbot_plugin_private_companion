@@ -12,9 +12,13 @@ from companion_v2.foundation.clock import DeterministicClock
 from companion_v2.foundation.refs import ScopeKind, ScopeRef, SubjectKind, SubjectRef
 from companion_v2.identity_policy.directory import IdentityDirectory
 from companion_v2.identity_policy.models import AuthenticatedHostPrincipal, AuthorizationTier
-from companion_v2.screen.models import SCREEN_EXTENSION, SCREEN_PROCESS, SCREEN_READ
 from companion_v2.storage.runtime import StorageRuntime
 
+
+# Synthetic policy identifiers; no screen implementation is loaded.
+SCREEN_EXTENSION = "companion.screen"
+SCREEN_PROCESS = "screen.process"
+SCREEN_READ = "screen.read"
 
 NOW = datetime(2026, 9, 21, tzinfo=timezone.utc)
 INSTALLATION = "installation-g6"

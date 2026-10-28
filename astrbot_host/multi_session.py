@@ -25,7 +25,6 @@ from companion_v2.adapters.astrbot.provider import AstrBotTextProvider
 from companion_v2.adapters.astrbot.provider_catalog import TextProviderSettings, assemble_providers, loaded_routing
 from companion_v2.adapters.astrbot.tools import CompositeAstrBotToolPort
 from companion_v2.configuration.registry import FieldRegistry
-from companion_v2.conversation.content.authoring_tasks import authoring_profiles
 from companion_v2.conversation.delivery import DeliveryReceipt, LocalSender
 from companion_v2.conversation.messages import REPLY_KIND
 from companion_v2.conversation.pokes import poke_reply_profile
@@ -41,9 +40,7 @@ from companion_v2.conversation.media.context_caption import context_caption_prof
 from companion_v2.conversation.media.image_narration import image_narration_profile
 from companion_v2.conversation.media.video.narration import video_narration_profile
 from companion_v2.conversation.media.understanding import intake_settings as file_intake_settings
-from companion_v2.screen.interpretation import screen_interpretation_profile
 from .settings import HostControlError
-from .huawei_health.service import get_huawei_health_service_for_root
 from companion_v2.conversation.voice_reply import VoiceReplyDelivery
 from companion_v2.execution.models import Lane, ProviderBinding, TaskContext, TaskError, digest, require, stamp
 from companion_v2.foundation.outcome import Outcome
@@ -383,7 +380,6 @@ class MultiHostSession:
                  persona_window_snapshot_lookup=None, persona_window_snapshot_update=None):
         self.runtime, self.settings, self.authority, self.types, self.now = runtime, settings, authority, native_types, now
         self.native_tool_port = native_tool_port
-        self.huawei_health = get_huawei_health_service_for_root(runtime.data_root, logger=logger)
         common = settings.common
         weather_port, weather_alert_port = weather_ports or configured_weather_ports(None)
         self.voice = NativeVoiceReply(native_context).render
@@ -440,8 +436,6 @@ class MultiHostSession:
                     reading_profile(common.provider_id, max_output_tokens=common.max_output_tokens),
                     image_review_profile(common.provider_id),
                     context_caption_profile(common.provider_id),
-                    screen_interpretation_profile(common.provider_id),
-                    *authoring_profiles(common.provider_id, draft_tokens=common.max_output_tokens),
                     *writing_profiles(common.provider_id, max_output_tokens=common.max_output_tokens),
                     *((image_narration_profile(next(model.binding.provider for model in self.models
                         if "image" in model.local_provider().capabilities)),)
@@ -481,8 +475,6 @@ class MultiHostSession:
             wake_port=self._wake_snapshot,
             presence_port=MultiPresence(self))
         self.application = self.host.application
-        if hasattr(self.application, "contact_schedule"):
-            self.application.contact_schedule.bind_health_source(self.huawei_health)
         self.application.image_fallback.attach_port(ReviewFallbackRoutes(self))
         # 私聊权限的**默认值**要在签发那一刻就读到：新用户一开始有没有对话/主动权限，
         # 由 `private_access` 那一组决定（见 companion_v2/relationships/private_access.py）。
@@ -863,27 +855,6 @@ class MultiHostSession:
             return Outcome.failed("host_core_reply_prepare_failed",
                                   "core reply admission could not be prepared")
 
-    async def _huawei_health_material(self, context, at):
-        if context.scope.kind is not ScopeKind.PRIVATE:
-            return None
-        try:
-            settings = self.application.perception_settings.capture(context, at)["settings"]
-            if settings.get("health_enabled") is not True:
-                return None
-            service = self.huawei_health
-            await service.initialize()
-            if not service.is_bound():
-                return None
-            if not service.allowed_for(context.actor.subject.subject_id,
-                                       context.role_binding.role.subject_id):
-                return None
-            cached = service.cached_context(max_age_seconds=3600)
-            if cached is None:
-                service.schedule_refresh()
-            return cached
-        except Exception as error:
-            logger.warning("[CompanionV2] 华为健康感知读取降级 error_type=%s", type(error).__name__)
-            return None
 
     async def prepare_core_reply(self, event, target, *, group_admission=None, plan=None):
         """Prepare only V2 identity and prompt data for AstrBot's normal reply pipeline."""
@@ -987,10 +958,8 @@ class MultiHostSession:
                             except Exception as error:
                                 logger.warning("[CompanionV2] 关键词材料未注入 error_type=%s",
                                                type(error).__name__)
-                        health_material = await self._huawei_health_material(context, self.now())
                         prompt = build_core_reply_prompt(self.application, context, captured, at=self.now(),
-                                                         keyword_materials=keyword_entries,
-                                                         health_material=health_material)
+                                                         keyword_materials=keyword_entries)
                         prompt_instruction = getattr(prompt, "context_instruction", prompt.instruction)
                         stable_prompt_instruction = getattr(prompt, "stable_instruction", "")
                         context_sections = prompt.sections

@@ -15,7 +15,6 @@ from .journal_events import JOURNAL_SOURCE_OWNER
 from .news_events import SOURCE_OWNER as NEWS_OWNER
 from .official_alert_events import SOURCE_OWNER as ALERT_OWNER
 from .reminiscence_events import SOURCE_OWNER as REMINISCENCE_OWNER
-from .screen_events import SOURCE_OWNER as SCREEN_OWNER
 from .weather_change_events import SOURCE_OWNER as WEATHER_CHANGE_OWNER
 from .weather_events import SOURCE_OWNER as WEATHER_OWNER
 
@@ -31,7 +30,6 @@ SOURCE_CATEGORIES = {
     ALERT_OWNER: ("环境与状态", "环境与状态变化"),
     BALANCE_OWNER: ("环境与状态", "环境与状态变化"),
     NEWS_OWNER: ("资讯", "外部资讯"),
-    SCREEN_OWNER: ("屏幕观察", "已授权屏幕观察"),
 }
 SOURCE_LABELS = {
     ACTIVITY_OWNER: "角色活动回执",
@@ -44,7 +42,6 @@ SOURCE_LABELS = {
     ALERT_OWNER: "官方气象预警",
     BALANCE_OWNER: "服务余额",
     NEWS_OWNER: "资讯源",
-    SCREEN_OWNER: "授权屏幕回执",
 }
 THOUGHT_ORIGINS = {
     "relationship_event": "关系话题",
@@ -58,7 +55,6 @@ THOUGHT_ORIGINS = {
     "calendar_event": "已接受的约定",
     "date_event": "日期节点",
     "meal_event": "饭点语境",
-    "screen_event": "授权屏幕观察",
     "weather_change_event": "天气变化",
     "official_alert_event": "天气预警",
     "weather_event": "当前天气",

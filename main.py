@@ -49,9 +49,6 @@ from .astrbot_host.core_reply_native_send import inject_core_reply_send_tool
 from .astrbot_host.core_reply_perception import (
     inject_core_reply_perception_context, inject_core_reply_perception_policy,
 )
-from .astrbot_host.native_extensions.host_events import (
-    prepare_native_host_request, observe_native_host_response, observe_native_host_result,
-)
 from .astrbot_host.core_reply_segmentation import (
     activate_core_reply_segmentation, prepare_core_reply_segmentation,
     prepare_core_reply_streaming_boundary,
@@ -82,7 +79,6 @@ from .astrbot_host.storage_location import prepare_storage_root, resolve_data_ro
 from companion_v2.product import PRODUCT_VERSION
 from companion_v2.diagnostics.inbound import InboundNoReplyLedger, SUPPRESSED, UNMET
 from companion_v2.conversation.private_reply_context import merged_input_sequence
-from .astrbot_host.integration_registry import UnifiedCompanionExtensionAPI
 from .astrbot_host.recalls import is_notice_event
 from .astrbot_host.stranger_notice import refuse_stranger
 
@@ -126,7 +122,7 @@ def _can_continue_astrbot_core_reply(code):
 @register(
     PLUGIN_NAME,
     "menglimi",
-    "我会永远陪着你 V2.0 统一陪伴宿主，整合核心生活能力与公开拓展 API。",
+    "我会永远陪着你 Lite：核心聊天、记忆、生活与主动联系。",
     PLUGIN_VERSION,
 )
 class PrivateCompanionV2StagingPlugin(Star):
@@ -158,13 +154,6 @@ class PrivateCompanionV2StagingPlugin(Star):
                         config_object.save_config()
                     except Exception:
                         logger.warning("[CompanionV2] 旧单目标设置已在内存迁移，但持久化失败", exc_info=True)
-            # One public facade exposes the body and its seven internal modules.
-            # Independent third-party integrations use their documented APIs.
-            self.extension_api = UnifiedCompanionExtensionAPI(self.staging)
-            try:
-                self.staging.register_routes()
-            except Exception:
-                logger.warning("[CompanionV2] 共享宿主管理 API 注册失败", exc_info=True)
         except BaseException:
             self._retire_failed_initialization()
             raise
@@ -530,27 +519,22 @@ class PrivateCompanionV2StagingPlugin(Star):
 
     @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE, priority=235000)
     async def receive_companion_binding(self, event: AstrMessageEvent):
-        """First-run binding, handled before the staging target can claim anything.
+        """Show the exact account fields needed by the official plugin editor."""
+        from .astrbot_host.binding import event_identity
 
-        Runs after the notice listener and before ordinary plugin handlers:
-        binding has to be seen while nothing is pinned -- ``claims``
-        refuses every message until a target exists, so a bind command read at the
-        intake priority would never be reached. Only the literal command is taken;
-        ordinary private messages fall through to normal handling untouched.
-
-        The reply is logged, never sent. Binding happens before any session exists,
-        and the delivery boundary does not permit private sends without one, so the
-        operator reads the outcome on the「开始使用」page instead. That ordering is
-        what keeps this role's first real message the draft they reviewed.
-        """
         if not self.staging.handles_binding(event):
             return
         event.stop_event()
-        result = await self.staging.receive_binding(event)
-        if result.get("handled"):
-            logger.info("[CompanionV2] 首次绑定: %s", result.get("reason") or "ok")
+        identity = event_identity(event)
+        if identity is None:
+            text = "无法读取当前私聊身份，请检查平台连接后重试。"
         else:
-            logger.warning("[CompanionV2] 绑定命令未被受理")
+            text = ("Lite 请由管理员在 AstrBot 插件配置 → 账号与会话中添加私聊目标：\n"
+                    f"平台实例 ID：{identity['platform_id']}\nBot 账号：{identity['account_id']}\n"
+                    f"参与者：{identity['participant_id']}\n"
+                    "再为同一逻辑 Bot ID 添加人格映射，开启接管、保存并重载插件。"
+                    "本条命令只展示配置资料，没有修改权限或绑定。")
+        await event.send(event.plain_result(text))
 
     def _core_reply_owner_token(self):
         token = getattr(self, "_core_reply_owner", None)
@@ -1022,7 +1006,6 @@ class PrivateCompanionV2StagingPlugin(Star):
     async def prepare_companion_core_request(self, event: AstrMessageEvent, req):
         state = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
         if not isinstance(state, dict):
-            prepare_native_host_request(self.staging, event, req)
             return
         self._adopt_core_reply_delivery(event)
         self._apply_private_follow_ups_to_request(event, req)
@@ -1060,7 +1043,6 @@ class PrivateCompanionV2StagingPlugin(Star):
             except Exception as error:
                 logger.warning("[CompanionV2] V2 工具暂不可用，保留 AstrBot 核心工具 error_type=%s",
                                type(error).__name__)
-        prepare_native_host_request(self.staging, event, req)
         inject_functional_command_instruction(
             event, req, channel=str(prepared.get("channel") or ""), own_module=__name__,
             application=application,
@@ -1210,7 +1192,6 @@ class PrivateCompanionV2StagingPlugin(Star):
                         part.text, _ = clean_reply_text(part.text)
         from .astrbot_host.core_reply_voice import observe_core_voice_response
         observe_core_voice_response(event, response)
-        observe_native_host_response(self.staging, event, response)
         observe_core_llm_response(event, response)
         if response is not None and getattr(response, "role", None) == "assistant":
             state = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
@@ -1219,10 +1200,6 @@ class PrivateCompanionV2StagingPlugin(Star):
             if observer is not None and isinstance(prepared, dict):
                 observer.output(prepared, getattr(response, "completion_text", "") or "")
             self._observe_session(event)
-
-    @filter.on_decorating_result(priority=-999999)
-    async def observe_companion_native_presentation(self, event: AstrMessageEvent):
-        observe_native_host_result(self.staging, event)
 
     @filter.on_decorating_result(priority=100000)
     async def observe_companion_context_reset(self, event: AstrMessageEvent):

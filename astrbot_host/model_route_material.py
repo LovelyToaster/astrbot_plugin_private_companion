@@ -1,6 +1,6 @@
 """回答「你现在用的什么模型」时的只读材料：四类，只给名称。
 
-这份材料从当前会话的 V2 路由和原生 Image 公共配置读取，不走需要管理权限的
+这份材料从当前会话的 V2 路由读取，不走需要管理权限的
 模型管理页面，也不读取或暴露任何密钥。
 """
 
@@ -19,7 +19,7 @@ INSTRUCTION = (
     "不要拿别的项顶替，也不要猜模型名。")
 
 VISION_KIND = "conversation.context_image_caption"
-VISION_KINDS = ("screen.interpretation", VISION_KIND, "image_review", "conversation.image_review")
+VISION_KINDS = (VISION_KIND, "image_review", "conversation.image_review")
 
 
 def _label(meta) -> str:
@@ -42,107 +42,14 @@ def _entry(provider_id: str, model: str = "") -> dict[str, Any]:
     return {"provider": provider_id, "model": model} if model else {"provider": provider_id}
 
 
-def _image_settings(native_tool_port):
-    """Read the public Image settings once, without exposing credentials."""
-    if native_tool_port is None:
-        return None
-    pending = [native_tool_port]
-    visited = set()
-    api = None
-    while pending:
-        port = pending.pop(0)
-        if id(port) in visited:
-            continue
-        visited.add(id(port))
-        getter = getattr(port, "image_extension_api", None)
-        if callable(getter):
-            api = getter()
-            if api is not None:
-                break
-        ports = getattr(port, "ports", ())
-        if isinstance(ports, (tuple, list)):
-            pending.extend(ports)
-    output = api.output_configuration() if api is not None else None
-    settings = output.get("settings") if isinstance(output, dict) else None
-    return settings if isinstance(settings, dict) and settings.get("enabled") is True else None
 
 
-def _image_routes(settings, operation):
-    endpoints = {item.get("id"): item for item in settings.get("endpoints", ())
-                 if isinstance(item, dict) and isinstance(item.get("id"), str)}
-    route_config = settings.get("operation_routes")
-    if isinstance(route_config, dict):
-        routes = route_config.get(operation, ())
-    else:
-        routes = ["online:" + identifier for identifier, item in endpoints.items()
-                  if item.get("enabled") is True]
-        for backend in ("sd_webui", "comfyui"):
-            if isinstance(settings.get(backend), dict) and settings[backend].get("base_url"):
-                routes.append(backend)
-    return endpoints, routes
 
 
-def _online_edit_reference_limit(endpoint):
-    if (endpoint.get("enabled") is not True or not endpoint.get("base_url")
-            or endpoint.get("platform") == "minimax"):
-        return None
-    platform = endpoint.get("platform", "auto")
-    if platform == "auto":
-        try:
-            from .native_extensions.image_native.output_routing import resolve_platform
-            platform = resolve_platform(endpoint)
-        except Exception:
-            return None
-    if platform not in {"openai", "openrouter", "agnes", "sensenova", "doubao"}:
-        return None
-    value = endpoint.get("max_reference_images", 1)
-    return value if type(value) is int and value > 0 else None
 
 
-def _local_edit_reference_limit(settings, route):
-    config = settings.get(route)
-    if not isinstance(config, dict) or not config.get("base_url"):
-        return None
-    if route == "sd_webui":
-        return 1
-    workflows = config.get("workflows")
-    if isinstance(workflows, str):
-        try:
-            workflows = json.loads(workflows)
-        except (TypeError, ValueError):
-            return None
-    edit = workflows.get("edit") if isinstance(workflows, dict) else None
-    mapping = edit.get("mapping") if isinstance(edit, dict) else None
-    fields = mapping.get("fields") if isinstance(mapping, dict) else None
-    if not isinstance(fields, dict):
-        return None
-    count = sum(1 for field in fields.values()
-                if isinstance(field, dict) and field.get("kind") == "image")
-    return count if count > 0 else None
 
 
-def image_edit_reference_limit(native_tool_port):
-    """Return the conservative reference count accepted by the active edit route."""
-    try:
-        settings = _image_settings(native_tool_port)
-        if settings is None:
-            return None
-        endpoints, routes = _image_routes(settings, "edit")
-        limits = []
-        for route in routes:
-            if not isinstance(route, str):
-                continue
-            if route.startswith("online:"):
-                limit = _online_edit_reference_limit(endpoints.get(route[7:], {}))
-            elif route in ("sd_webui", "comfyui"):
-                limit = _local_edit_reference_limit(settings, route)
-            else:
-                limit = None
-            if limit is not None:
-                limits.append(limit)
-        return min(limits) if limits else None
-    except Exception:
-        return None
 
 
 def _host_provider(host_context, kind: str, umo):
@@ -264,44 +171,6 @@ def route_snapshot(application, context):
     return _route_snapshot_from_router(application, context)
 
 
-def image_route_snapshot(native_tool_port):
-    """Project the public native Image configuration into model-safe names."""
-    unavailable = {"state": "unavailable", "reason": "生图扩展未启用或没有可用路由"}
-    if native_tool_port is None:
-        return unavailable
-    try:
-        settings = _image_settings(native_tool_port)
-        if settings is None:
-            return unavailable
-        endpoints, routes = _image_routes(settings, "generate")
-        entries = []
-        for route in routes:
-            if not isinstance(route, str):
-                continue
-            if route.startswith("online:"):
-                endpoint = endpoints.get(route[7:])
-                if not isinstance(endpoint, dict) or endpoint.get("enabled") is not True:
-                    continue
-                if not endpoint.get("base_url"):
-                    continue
-                model = endpoint.get("model", "")
-                platform = endpoint.get("platform", "auto")
-                if isinstance(model, str) and model.strip():
-                    entries.append(_entry(str(platform).strip() or "auto", model.strip()))
-            elif route in ("sd_webui", "comfyui"):
-                backend = settings.get(route)
-                if isinstance(backend, dict) and backend.get("base_url"):
-                    model = backend.get("model", "")
-                    entries.append(_entry(route, str(model).strip() if isinstance(model, str) else ""))
-        if not entries:
-            return unavailable
-        result = dict(entries[0])
-        if len(entries) > 1:
-            result["models"] = [item.get("model", "") for item in entries]
-            result["providers"] = [item["provider"] for item in entries]
-        return result
-    except Exception:
-        return unavailable
 
 
 def _route_from_snapshot(snapshot, *kinds):
@@ -342,10 +211,7 @@ def build_summary(application, host_context, umo, context, at, native_tool_port=
                               else {"state": "unavailable", "reason": reason})
         except Exception as error:
             summary[title] = {"state": "unavailable", "reason": type(error).__name__}
-    image_summary = image_route_snapshot(native_tool_port)
-    if image_summary.get("state") == "unavailable":
-        image_summary = _route_from_snapshot(snapshot, "image.generate") or image_summary
-    summary["生图"] = image_summary
+
     return summary
 
 

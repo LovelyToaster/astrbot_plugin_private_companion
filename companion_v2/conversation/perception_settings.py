@@ -13,8 +13,6 @@ OWNER = GROUP
 DEFAULTS = {
     "calendar_enabled": True,
     "calendar_timezone": "Asia/Shanghai",
-    "health_enabled": False,
-    "health_proactive_enabled": False,
     "holiday_enabled": True,
     "holiday_country": "CN",
     "lunar_enabled": True,
@@ -41,7 +39,7 @@ def validate(values):
     if type(values) is not dict or set(values) != set(DEFAULTS):
         raise ConfigurationError("perception_configuration_invalid", "provide the declared perception settings")
     if any(type(values[name]) is not bool for name in (
-            "calendar_enabled", "health_enabled", "health_proactive_enabled", "holiday_enabled", "lunar_enabled",
+            "calendar_enabled", "holiday_enabled", "lunar_enabled",
             "automatic_solar_terms_enabled", "almanac_enabled",
             "platform_enabled", "model_route_enabled", "configured_modalities_enabled")):
         raise ConfigurationError("perception_configuration_invalid", "perception switches must be boolean")

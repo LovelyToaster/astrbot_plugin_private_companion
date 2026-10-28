@@ -50,7 +50,8 @@ class ContactPreferenceTests(ContactFixture, unittest.IsolatedAsyncioTestCase):
         self.settings(app, {}, reset=("note",)).unwrap()
         self.assertEqual(self.preferences(app).values["note"], "关系说明")
         # Includes "screen": the authorized Screen observation purpose added with T20.
-        self.assertEqual(len(PURPOSES), 15)
+        self.assertEqual(len(PURPOSES), 14)
+        self.assertNotIn("screen", PURPOSES)
 
     async def test_relation_is_separate_per_bot_and_subject_and_not_readable_by_other_important_user(self):
         app = self.host().application

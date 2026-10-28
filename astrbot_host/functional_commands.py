@@ -8,7 +8,7 @@ import json
 import re
 
 from .binding import message_text
-from .native_extensions.request_context import set_system_instruction
+from .prompt_instructions import set_system_instruction
 
 
 @dataclass(frozen=True)
@@ -109,32 +109,16 @@ _ROOTS = {
 
 _HDSI_ACTIONS = frozenset({"开启", "关闭", "观察", "状态", "统计"})
 
-_MANAGEMENT_PAGES = {
-    "manage_expression": "陪伴小屋 → 表达",
-    "manage_relationship": "陪伴小屋 → 关系与记忆 → 对应用户页",
-    "manage_contact": "陪伴小屋 → 主动与联系 → 对应用户页",
-    "manage_life": "陪伴小屋 → 日记与生活或状态维护",
-    "manage_memory": "陪伴小屋 → 关系与记忆 → 记忆管理",
-    "manage_group": "陪伴小屋 → 关系网 → 对应群聊页",
-    "manage_host": "陪伴小屋 → 账号与会话或资料与维护",
-    "manage_image": "陪伴小屋 → 生图与图片素材",
-    "manage_native": "陪伴小屋 → 对应内置能力设置",
-    "manage_dates": "陪伴小屋 → 感知设置 → 重要日子与饭点（生日和纪念日自动读取）",
-    "manage_diagnostics": "陪伴小屋 → 治理与维护 → 诊断与配置",
-    "manage_efficiency": "陪伴小屋 → 治理与维护 → 近期回复效率",
-    "manage_hdsi": "陪伴小屋 → 状态维护 → 日程模式",
-    "retired_secret": "",
-    "image_tasks": "陪伴小屋 → 生图 → 生成记录",
-}
+_MANAGEMENT_PAGES = {}
 
 _HELP = (
     "私聊：陪伴 状态、能力列表、主动判定；陪伴 日程/查看日程、日记、梦境、记忆 <线索>、"
     "长期记忆 <线索>、片段 <线索>、答疑 <问题>；待审建议用“陪伴 答疑确认 <编号>”或“陪伴 答疑取消 <编号>”；"
     "日记、梦境、画像；生成日程、刷新日程、重新生成日程；"
-    "陪伴画图 <描述>、陪伴合照 <修改要求>；重要日期用 陪伴 日期列表、日期添加 <名称> <日期>、日期删除 <名称>；"
+    "重要日期用 陪伴 日期列表、日期添加 <名称> <日期>、日期删除 <名称>；"
     "日期列表也会列出每日反思自动记下的互动纪念日。\n"
     "群聊：陪伴群 状态、话题、黑话 <词>、片段 <线索>、LLM状态；关闭LLM / 开启LLM 需安装管理员。\n"
-    "查询依赖本轮实际授权工具；其他配置、权限、清理与重置请在陪伴小屋对应页面操作。"
+    "查询依赖本轮实际授权工具；其他配置、权限、清理与重置请在AstrBot 插件配置操作。"
 )
 
 
@@ -186,12 +170,18 @@ def _base_instruction(command: FunctionalCommand | None) -> str:
     if command is None:
         return ""
     intent = command.intent
+    if intent in {"image_generate", "image_edit", "image_tasks", "manage_image", "manage_native"}:
+        return "当前安装的是 7.0.0lite，未包含生图、识屏、设备、游戏、直播、一起陪伴或内容创作拓展。简短说明本次没有执行，不引导用户打开不存在的入口。"
+    if intent in {"manage_memory", "manage_efficiency"}:
+        return "Lite 未提供管理页面。记忆可用陪伴记忆或片段指令查询；统计和批量清理界面请使用完整版，不声称已执行清理。"
+    if intent.startswith("manage_") and intent not in {"manage_diagnostics"}:
+        return "请在 AstrBot 插件管理中打开我会永远陪着你 Lite 的配置：账号与会话管理目标，核心偏好管理记忆、生活、主动与表达。保存后重载插件。本条聊天指令没有更改配置。"
     if intent == "help":
         return "用户明确调用功能帮助。只简洁列出当前版本真实可用指令与管理页入口，不把旧版未迁移的操作说成仍可执行。\n" + _HELP
     if intent == "status":
         return "用户请求角色状态。优先依据本轮已提供的角色状态、睡眠和生活材料回答；材料缺失时说明未取得，不把角色状态套到用户身上。"
     if intent == "capabilities":
-        return "用户请求能力列表。只总结本轮实际可用工具和已启用内置能力，不声称未提供或未授权的能力可执行；设置入口指向陪伴小屋。"
+        return "用户请求能力列表。只总结本轮实际可用工具和已启用内置能力，不声称未提供或未授权的能力可执行；设置入口指向AstrBot 插件配置。"
     if intent == "diagnostics":
         return "用户请求诊断。优先调用本轮提供的 companion_v2_diagnostics_inspect 或 companion_v2_diagnostics_explain；检查按明确类型和当前角色/会话范围运行。用户要求修复时，先取得当前配置检查报告，再用 companion_v2_diagnostics_propose 保存待审建议；不得自行确认。只有 inspect 产生的当前运行证据才能作为检查结论，不能把设计说明说成已检查。"
     if intent in {"diagnostics_confirm", "diagnostics_cancel"}:
@@ -239,7 +229,7 @@ def _base_instruction(command: FunctionalCommand | None) -> str:
         return ("用户要求删除一条未完话头或便签。先用本轮授权的 companion_v2_memo_list（purpose=open_loop）"
                 "按用户给的线索找到唯一原件，再用 companion_v2_memo_delete 带上 memo_id 与 expected_revision；"
                 "只有成功回执才能说已删除。找不到、匹配多条、未授权或工具不可用时，如实说明没有删除并给出"
-                "「陪伴小屋 → 关系与记忆」入口，不要凭标题直接断言已删。")
+                "「AstrBot 插件配置 → 核心偏好")
     if intent in {"dates_list", "dates_add", "dates_remove"}:
         return ("本轮重要日期由程序读取或写入并附独立回执。若没有回执，说明本条没有更改日期；"
                 "有回执时只转述回执里的名称、日期与结果；自动纪念日以日期列表或删除回执为准，"
@@ -249,7 +239,7 @@ def _base_instruction(command: FunctionalCommand | None) -> str:
                 "「语音回复开关是否开启」，不得声称已经用新语种说过话，也不把本轮普通回复当成语音。")
     if intent == "manage_hdsi":
         return ("用户输入的是 V1 HDSI 聊天开关/统计指令。V7 不执行旧版窗口实验开关或统计语法；"
-                "日程模式已迁到陪伴小屋 → 状态维护 → 日程模式。说明本条聊天指令没有更改设置，不要声称已切换。")
+                "日程模式已迁到AstrBot 插件配置 → 核心偏好")
     if intent == "manage_diagnostics":
         return ("用户输入了答疑建议管理指令，但没有提供唯一建议编号。"
                 "确认或取消需在私聊完整输入“陪伴 答疑确认 <编号>”或“陪伴 答疑取消 <编号>”；不接受旧版编号或直接文本改配置。"
@@ -478,7 +468,7 @@ def _execute_important_dates(command, application, context):
     try:
         rows = _important_date_rows(snapshot.values.get(GROUP + ".important_dates", "[]"))
     except (ValueError, TypeError):
-        return "未执行：现有重要日期记录无法解析，请先到陪伴小屋核对。"
+        return "未执行：现有重要日期记录无法解析，请先到AstrBot 插件配置核对。"
     runtime = getattr(application, "runtime", None)
     auto_rows = ()
     if runtime is not None:

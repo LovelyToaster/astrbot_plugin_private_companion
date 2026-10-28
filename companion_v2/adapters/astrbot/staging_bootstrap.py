@@ -16,7 +16,6 @@ from companion_v2.capabilities.models import (
     CapabilityAuthorizationState, CapabilityDesiredState, CapabilityPackageDescriptor,
 )
 from companion_v2.capabilities.repositories import CapabilityRepository
-from companion_v2.capabilities.screen_access import PACKAGE_ID as SCREEN_PACKAGE_ID
 from companion_v2.execution.models import ProviderBinding, TaskContext, TaskError, encode, require
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import AudienceRef, OperationRef, VersionRef, normalize_utc
@@ -34,7 +33,6 @@ from companion_v2.identity_policy.models import (
 from companion_v2.identity_policy.personas import ConversationRoute, PersonaBinding, PersonaDirectory, RuntimeIdentity, SelectorKind
 from companion_v2.identity_policy.repository import PersistentIdentityDirectory
 from companion_v2.relationships.private_access import REVOCABLE_ABSENCE_CODES, REVOCABLE_CAPABILITIES
-from companion_v2.screen import SCREEN_EXTENSION, SCREEN_PROCESS, SCREEN_READ
 from companion_v2.storage.models import OperationState
 from companion_v2.storage.repositories import OperationRepository
 from companion_v2.storage.runtime import StorageRuntime
@@ -82,21 +80,8 @@ class DeliveryAuthorizationReceipt:
     replayed: bool
 
 
-@dataclass(frozen=True)
-class ScreenPreparationReceipt:
-    package_version: str
-    artifact_hash: str
-    scope: str
-    replayed: bool
 
 
-@dataclass(frozen=True)
-class ScreenUpgradeReceipt:
-    previous_version: str
-    package_version: str
-    artifact_hash: str
-    revision: int
-    scope: str
 
 
 def _receipt_record(configuration: StagingConfiguration) -> str:
@@ -144,8 +129,6 @@ class AstrBotStagingBootstrap:
     OPERATION_ID = "astrbot-staging-bootstrap"
     IDENTITY_ID = "astrbot-staging-participant"
     PERSONA_ID = "astrbot-staging-persona"
-    SCREEN_GRANT_PREFIX = STAGING_SCREEN_GRANT_PREFIX
-    SCREEN_ACTIONS = (SCREEN_READ, SCREEN_PROCESS, "extension.tool.invoke")
 
     def __init__(self, runtime: StorageRuntime, context, *, configuration: StagingConfiguration,
                  native_types: NativeAdapterTypes, native_tool_port=None, now=None):
@@ -303,128 +286,8 @@ class AstrBotStagingBootstrap:
         return Outcome.success(DeliveryAuthorizationReceipt(
             "not-required", DELIVERY_CAPABILITY, None, "not_required", True))
 
-    @staticmethod
-    def _screen_package(package: CapabilityPackageDescriptor) -> None:
-        if (not isinstance(package, CapabilityPackageDescriptor)
-                or package.extension_id != SCREEN_EXTENSION
-                or package.package_id != SCREEN_PACKAGE_ID
-                or set(package.capabilities) != {SCREEN_READ, SCREEN_PROCESS}
-                or set(package.dataset_owners) != {"screen"}):
-            raise TaskError("staging_screen_package_invalid", "loaded Screen package has an unexpected identity")
 
-    def prepare_screen(self, package: CapabilityPackageDescriptor) -> Outcome[ScreenPreparationReceipt]:
-        """Authorize only the pinned private target for the loaded Screen package."""
-        try:
-            self._screen_package(package)
-            with self.runtime.transaction():
-                at = self._time()
-                if self._marker() is None:
-                    raise TaskError("staging_not_initialized", "initialize the staging profile first")
-                target = self._target(at)
-                config = self.configuration
-                capabilities = CapabilityRepository(self.runtime)
-                require(capabilities.register_descriptor(package, registered_at=at))
-                installed = capabilities.installation(extension_id=SCREEN_EXTENSION)
-                if installed.failure is not None:
-                    if installed.failure.code != "capability_not_installed":
-                        require(installed)
-                    require(capabilities.acquire(extension_id=SCREEN_EXTENSION,
-                        package_id=package.package_id, package_version=package.package_version,
-                        expected_revision=0, observed_at=at))
-                    changed = True
-                else:
-                    current = installed.unwrap()
-                    if (current.package_id, current.package_version, current.artifact_hash,
-                            current.desired_state) != (package.package_id, package.package_version,
-                                                       package.artifact_hash, CapabilityDesiredState.ACTIVE):
-                        raise TaskError("staging_screen_package_changed", "Screen installation differs from the loaded package")
-                    changed = False
 
-                projection = require(capabilities.projection(extension_id=SCREEN_EXTENSION,
-                    role=config.persona.role, scope=config.scope))
-                selection = projection.role_selection
-                if selection is None:
-                    require(capabilities.set_role_enabled(extension_id=SCREEN_EXTENSION,
-                        role=config.persona.role, bot_id=config.scope.bot_id, enabled=True,
-                        expected_revision=0, observed_at=at))
-                    changed = True
-                elif not selection.enabled:
-                    raise TaskError("staging_screen_role_disabled", "Screen was explicitly disabled for this role")
-
-                for capability in (SCREEN_READ, SCREEN_PROCESS):
-                    consent = capabilities.consent(extension_id=SCREEN_EXTENSION,
-                        capability_id=capability, subject=config.subject, scope=config.scope)
-                    if consent.failure is not None:
-                        if consent.failure.code != "capability_consent_missing":
-                            require(consent)
-                        require(capabilities.set_authorization(extension_id=SCREEN_EXTENSION,
-                            capability_id=capability, subject=config.subject, scope=config.scope,
-                            state=CapabilityAuthorizationState.ACTIVE, expected_revision=0, observed_at=at))
-                        changed = True
-                grants = self.identity.snapshot().grants
-                for capability in self.SCREEN_ACTIONS:
-                    grant_id = self.SCREEN_GRANT_PREFIX + capability
-                    same = tuple(grant for grant in grants if grant.subject == config.subject
-                        and grant.scope == config.scope and grant.capability == capability)
-                    fixed = next((grant for grant in grants if grant.grant_id == grant_id), None)
-                    if fixed is None and not same:
-                        self.identity.issue_grant(grant_id=grant_id, subject=config.subject,
-                            scope=config.scope, capability=capability, tier=AuthorizationTier.STANDARD,
-                            valid_from=at, expires_at=config.expires_at,
-                            expected_revision=self.identity.revision)
-                        changed = True
-                    elif (fixed is None or same != (fixed,) or fixed.revision != 1
-                            or fixed.state is not GrantState.ACTIVE
-                            or fixed.tier is not AuthorizationTier.STANDARD
-                            or fixed.expires_at != config.expires_at):
-                        raise TaskError("staging_screen_grant_changed", "Screen grant was changed or revoked")
-                    require(self.identity.authorize(target.actor, scope=config.scope,
-                        capability=capability, observed_at=at))
-                for capability in (SCREEN_READ, SCREEN_PROCESS):
-                    require(capabilities.authorize(extension_id=SCREEN_EXTENSION,
-                        capability_id=capability, subject=config.subject, scope=config.scope))
-                require(capabilities.require_role_enabled(extension_id=SCREEN_EXTENSION,
-                    role=config.persona.role, bot_id=config.scope.bot_id))
-                return Outcome.success(ScreenPreparationReceipt(package.package_version,
-                    package.artifact_hash, config.scope.native_scope_id, not changed))
-        except TaskError as error:
-            return Outcome.failed(error.code, str(error))
-        except Exception:
-            return Outcome.failed("staging_screen_preparation_failed", "Screen preparation could not be verified or committed")
-
-    def upgrade_screen(self, package: CapabilityPackageDescriptor, *, previous_version: str,
-                       previous_hash: str, expected_revision: int) -> Outcome[ScreenUpgradeReceipt]:
-        """Explicitly replace one reviewed Screen package while preserving current authority."""
-        try:
-            self._screen_package(package)
-            if (type(previous_version) is not str or not previous_version
-                    or type(previous_hash) is not str or not previous_hash
-                    or type(expected_revision) is not int or expected_revision < 1):
-                raise TaskError("staging_screen_upgrade_invalid", "provide the exact installed Screen package and revision")
-            with self.runtime.transaction():
-                at = self._time()
-                if self._marker() is None:
-                    raise TaskError("staging_not_initialized", "initialize the staging profile first")
-                self._target(at)
-                capabilities = CapabilityRepository(self.runtime)
-                current = require(capabilities.installation(extension_id=SCREEN_EXTENSION))
-                if (current.package_id != package.package_id or current.package_version != previous_version
-                        or current.artifact_hash != previous_hash or current.revision != expected_revision
-                        or current.desired_state is not CapabilityDesiredState.ACTIVE):
-                    raise TaskError("staging_screen_upgrade_conflict", "installed Screen package differs from the reviewed revision")
-                if package.package_version == previous_version:
-                    raise TaskError("staging_screen_upgrade_invalid", "a package change requires a new version")
-                require(capabilities.register_descriptor(package, registered_at=at))
-                upgraded = require(capabilities.update(extension_id=SCREEN_EXTENSION,
-                    package_id=package.package_id, package_version=package.package_version,
-                    expected_revision=expected_revision, observed_at=at))
-                require(self.prepare_screen(package))
-                return Outcome.success(ScreenUpgradeReceipt(previous_version, package.package_version,
-                    package.artifact_hash, upgraded.revision, self.configuration.scope.native_scope_id))
-        except TaskError as error:
-            return Outcome.failed(error.code, str(error))
-        except Exception:
-            return Outcome.failed("staging_screen_upgrade_failed", "Screen upgrade could not be verified or committed")
 
     async def _native_preflight(self):
         config, s, types = self.configuration, self.configuration.scope, self.native_types

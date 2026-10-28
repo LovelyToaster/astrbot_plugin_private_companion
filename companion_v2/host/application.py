@@ -50,15 +50,12 @@ from companion_v2.conversation.perception_settings import (PerceptionConfigurati
     configuration_fields as perception_configuration_fields)
 from companion_v2.conversation.media.quota import (ImageQuotaConfigurationOwner,
     configuration_fields as image_quota_configuration_fields)
-from companion_v2.conversation.media.output_settings import (ImageOutputConfigurationOwner,
-    configuration_fields as image_output_configuration_fields)
 from companion_v2.conversation.media.review import (ImageReviewConfigurationOwner, GroupImageReview,
     configuration_fields as image_review_configuration_fields)
 from companion_v2.conversation.media.review_service import GroupImageReviewService, image_review_profile
 from companion_v2.conversation.media.image_narration import PrivateImageNarrationService
 from companion_v2.conversation.media.video.narration import NativeVideoNarrationService
 from companion_v2.conversation.media.context_caption import ContextImageCaptionService
-from companion_v2.conversation.content.authoring_workflow import ContentAuthoringWorkflow
 from companion_v2.conversation.media.fallback import ImageReviewFallback, OWNER as FALLBACK_OWNER
 from companion_v2.conversation.messages import ConversationMessages, DELIVERY_KIND, REPLY_ACTION, REPLY_KIND
 from companion_v2.conversation.tool_loop import LocalRoleTools
@@ -98,12 +95,6 @@ from companion_v2.role_work.journal import (RoleActivityJournalMaterialProducer,
 from companion_v2.role_work.journal.writing import RoleJournalWriter
 from companion_v2.role_work.journal.collection import JournalMaterialCollector
 from companion_v2.role_work.journal.reading_materials import RoleReadingJournalMaterialProducer
-from companion_v2.screen.repositories import ScreenRepository
-from companion_v2.screen.journal_materials import ScreenJournalMaterialProducer
-from companion_v2.screen.configuration import (ScreenConfigurationOwner, ScreenSettings,
-    configuration_fields as screen_configuration_fields)
-from companion_v2.screen.interpretation import ScreenInterpretationService
-from companion_v2.screen.peek import ScreenPeekService
 from companion_v2.conversation.relay_settings import (RelayConfigurationOwner, RelaySettings,
     configuration_fields as relay_configuration_fields)
 from companion_v2.conversation.recall_settings import (RecallConfigurationOwner, RecallSettings,
@@ -143,10 +134,6 @@ from companion_v2.expression.reaction_configuration import (ReactionConfiguratio
     configuration_fields as reaction_configuration_fields)
 from companion_v2.knowledge.configuration import (KnowledgeConfigurationOwner,
     configuration_fields as knowledge_configuration_fields)
-from companion_v2.conversation.content.authoring_service import (
-    configuration_fields as content_authoring_configuration_fields)
-from companion_v2.conversation.content.cover_assets import (
-    configuration_fields as content_cover_configuration_fields)
 from companion_v2.knowledge.context import knowledge_context
 from companion_v2.role_work.life import rest_gate
 from companion_v2.role_work.journal.self_review_evidence import SelfReviewEvidenceCatalog
@@ -238,12 +225,11 @@ class CompanionApplication:
             *perception_configuration_fields(), *person_configuration_fields(),
             *person_learning_configuration_fields(),
             *image_quota_configuration_fields(), *image_review_configuration_fields(),
-            *image_output_configuration_fields(),
             *expression_configuration_fields(), *expression_private_configuration_fields(),
             *expression_group_configuration_fields(), *reaction_configuration_fields(),
             *busy_gate_configuration_fields(), *group_participation_configuration_fields(),
             *knowledge_configuration_fields(), *budget_configuration_fields(),
-            *screen_configuration_fields(), *recall_configuration_fields(),
+            *recall_configuration_fields(),
             *web_configuration_fields(),
             *library_configuration_fields(),
             *reference_configuration_fields(),
@@ -251,8 +237,7 @@ class CompanionApplication:
             *qzone_configuration_fields(),
             *private_access_configuration_fields(),
             *relay_configuration_fields(),
-            *(field for owner in capability_owners for field in owner.fields),
-            *content_authoring_configuration_fields(), *content_cover_configuration_fields()) if f.field_id not in registry.fields)
+            *(field for owner in capability_owners for field in owner.fields)) if f.field_id not in registry.fields)
         if extra:
             registry = FieldRegistry(version=registry.version, fields=tuple(registry.fields.values()) + extra)
         reference_configuration_owner = ReferenceConfigurationOwner(runtime)
@@ -263,12 +248,11 @@ class CompanionApplication:
                 StateConfigurationOwner(runtime),
                     LifeConfigurationOwner(runtime), ReplyConfigurationOwner(runtime, voice_policy),
                     PerceptionConfigurationOwner(runtime), ImageQuotaConfigurationOwner(runtime),
-                    ImageOutputConfigurationOwner(runtime),
                     ImageReviewConfigurationOwner(runtime), ExpressionConfigurationOwner(runtime),
                     PrivateExpressionConfigurationOwner(runtime), GroupExpressionConfigurationOwner(runtime),
                     ReactionConfigurationOwner(runtime), BusyGateConfigurationOwner(runtime),
                     GroupParticipationConfigurationOwner(runtime), KnowledgeConfigurationOwner(runtime),
-                    ScreenConfigurationOwner(runtime), RecallConfigurationOwner(runtime),
+                    RecallConfigurationOwner(runtime),
                     WebUnderstandingConfigurationOwner(runtime),
                     RelayConfigurationOwner(runtime),
                     LibraryConfigurationOwner(runtime),
@@ -282,7 +266,6 @@ class CompanionApplication:
             logger.warning("[CompanionV2] QQ presence scope migration failed error_type=%s", type(error).__name__)
         self.reply_settings = ReplySettings(self.configuration)
         self.perception_settings = PerceptionSettings(self.configuration)
-        self.screen_settings = ScreenSettings(self.configuration)
         self.recall_settings = RecallSettings(self.configuration)
         self.relay_settings = RelaySettings(self.configuration)
         self.library_settings = LibrarySettings(self.configuration)
@@ -322,9 +305,6 @@ class CompanionApplication:
         self.context_image_caption = ContextImageCaptionService(runtime, notify=self.notify)
         self.image_narration = PrivateImageNarrationService(runtime, notify=self.notify)
         self.video_narration = NativeVideoNarrationService(runtime, notify=self.notify)
-        self.screen_interpretation = ScreenInterpretationService(runtime, notify=self.notify)
-        self.screen_peek = ScreenPeekService(runtime, notify=self.notify)
-        self.authoring = ContentAuthoringWorkflow(runtime)
         self.poke_reply_model = PokeReplyModel(runtime, now=self.now)
         registrations = (
             TaskRegistration(TaskDefinition(REPLY_KIND, "conversation", REPLY_ACTION, Lane.FOREGROUND,
@@ -333,7 +313,7 @@ class CompanionApplication:
             TaskRegistration(TaskDefinition(DELIVERY_KIND, "conversation.delivery", REPLY_ACTION, Lane.FOREGROUND,
                 side_effect=SideEffect.MESSAGE_DELIVERY, binding=sender.binding, timeout_seconds=30,
                 max_attempts=1, concurrency=self.worker_limit), lambda spec, at: self.delivery.validate(spec, at)),
-        ) + self.poke_reply_model.registrations + self.journal_writer.registrations + self.memory_reflection.registrations + self.role_reader.registrations + self.state_maintenance.registrations + self.calendar_planning.registrations + self.growth_progress.registrations + self.self_review.registrations + self.expression_style.registrations + self.proactive.registrations + self.outbound.registrations + self.image_review_service.registrations + self.context_image_caption.registrations + self.image_narration.registrations + self.video_narration.registrations + self.screen_interpretation.registrations + self.screen_peek.registrations + self.authoring.registrations + (external.registrations if external is not None else ())
+        ) + self.poke_reply_model.registrations + self.journal_writer.registrations + self.memory_reflection.registrations + self.role_reader.registrations + self.state_maintenance.registrations + self.calendar_planning.registrations + self.growth_progress.registrations + self.self_review.registrations + self.expression_style.registrations + self.proactive.registrations + self.outbound.registrations + self.image_review_service.registrations + self.context_image_caption.registrations + self.image_narration.registrations + self.video_narration.registrations + (external.registrations if external is not None else ())
         registrations += self.expression_draft_review.registrations
         self.tasks = TaskSupervisor(runtime, registrations, limits=limits, now=self.now)
         # Reference material shares this runtime and the supervisor that owns it, so
@@ -416,15 +396,11 @@ class CompanionApplication:
         self.journal_material_producer = RoleActivityJournalMaterialProducer(self.role_life)
         self.journal_artifact_material_producer = RoleTextArtifactJournalMaterialProducer(self.role_life, tasks=self.tasks)
         self.journal_conversation_material_producer = RoleConversationJournalMaterialProducer(self.messages)
-        self.screen_repository = ScreenRepository(runtime, authorizer=self.tasks.identity)
-        self.journal_screen_material_producer = ScreenJournalMaterialProducer(
-            self.tasks, self.screen_repository, settings=self.screen_settings)
         self.role_reading = RoleReadingService(self.role_life, self.tasks, require_running=self.require_running)
         self.journal_reading_material_producer = RoleReadingJournalMaterialProducer(self.role_life, self.tasks)
         self.journal_material_collector = JournalMaterialCollector(self.tasks, self.role_life,
             activities=self.journal_material_producer, artifacts=self.journal_artifact_material_producer,
             readings=self.journal_reading_material_producer, conversations=self.journal_conversation_material_producer,
-            screens=self.journal_screen_material_producer,
             require_running=self.require_running)
         self.delivery = LocalConversationDelivery(self.messages, sender)
         self.messages.reply_images.enabled = sender.supports_images
@@ -432,7 +408,6 @@ class CompanionApplication:
         self.router = ModelRouter(self.configuration, profiles, providers,
                                   default_provider_resolver=default_provider_resolver)
         self.gateway = LocalModelGateway(self.router, BudgetLedger(runtime, budget, budget_soft), self.tasks)
-        self.authoring.attach(self.gateway, require_running=self.require_running)
         self.background_waiting = BackgroundTaskQueue(self.tasks)
         self.poke_reply_model.attach(self)
         self.image_review = GroupImageReview(self.messages)
@@ -449,11 +424,8 @@ class CompanionApplication:
         self.context_image_caption.attach(self)
         self.image_narration.attach(self)
         self.video_narration.attach(self)
-        self.screen_interpretation.attach(self)
-        self.screen_peek.attach(self)
         self.background = BackgroundCoordinator(self.tasks, self.outbound,
-                                                (self.agenda_background, self.image_review_service,
-                                                 self.screen_interpretation, self.screen_peek), notify=self.notify)
+                                                (self.agenda_background, self.image_review_service), notify=self.notify)
         self.state_maintenance.attach(self)
         self.calendar_planning.attach(self)
         self.growth_progress.attach(self)
@@ -479,7 +451,7 @@ class CompanionApplication:
                                                 relationships=self.relationship_memories,
                                                 role_state=self.role_state, weather_port=weather_port,
                                                 weather_alert_port=weather_alert_port, balance_port=balance_port,
-                                                news_port=news_port, screen_peek=self.screen_peek, wake_port=wake_port,
+                                                news_port=news_port, wake_port=wake_port,
                                                 health_settings=lambda context, at: self.perception_settings.capture(
                                                     context, at)["settings"],
                                                 notify=self.notify)
@@ -496,15 +468,10 @@ class CompanionApplication:
                                              models=self.gateway, messages=self.messages)
         if external is not None:
             external.attach(self.messages)
-            if {"game.tictactoe.move", "game.gomoku.move", "game.pig_dice.roll",
-                    "game.pig_dice.hold", "game.blackjack.create", "game.blackjack.hit",
-                    "game.blackjack.stand", "game.xiangqi.create",
-                    "game.xiangqi.move"} & external.actions:
-                self.memory.attach_game(external, require_running=self.require_running)
         self.tools = LocalRoleTools(self.messages, diagnostics=self.diagnostics, external=external, memory=self.memory,
                                    growth=self.role_growth_context.reader, timeline=self.role_timeline, calendar=self.calendar,
                                    relationships=self.relationship_memories, weather_port=weather_port,
-                                   role_state=self.role_state, authoring=self.authoring,
+                                   role_state=self.role_state,
                                    web_search_factory=search_port_factory)
         self.messages.reply_settings = self.reply_settings
         self.messages.perception_settings = self.perception_settings
@@ -987,8 +954,6 @@ class CompanionApplication:
             self.self_review.cancel_running()
             self.expression_style.cancel_running()
             self.image_review_service.cancel_running()
-            self.screen_interpretation.cancel_running()
-            self.screen_peek.cancel_running()
             self.memory.activity.close()
             if self.memory.game is not None:
                 self.memory.game.close()
@@ -1016,9 +981,6 @@ class CompanionApplication:
                 + self.image_narration.active_handles
                 + self.video_narration.active_handles
                 + self.poke_reply_model.active_handles
-                + self.screen_interpretation.active_handles
-                + self.screen_peek.active_handles
-                + (self.authoring.runner.active_handles if self.authoring.runner else ())
                 + (self.external.runner.active_handles if self.external else ()))
 
     async def close(self, *, grace_seconds=0.1):
@@ -1046,7 +1008,6 @@ class CompanionApplication:
                     await asyncio.wait(pending, timeout=0.25)
             await self.runner.close()
             await self.poke_reply_model.close()
-            await self.authoring.close()
             await self.background.close(grace_seconds=grace_seconds)
             await self.life_runtime.close()
             await self.state_maintenance.close()
@@ -1059,8 +1020,6 @@ class CompanionApplication:
             await self.context_image_caption.close()
             await self.image_narration.close()
             await self.video_narration.close()
-            await self.screen_interpretation.close()
-            await self.screen_peek.close()
             self.memory.activity.close()
             if self.memory.game is not None:
                 self.memory.game.close()

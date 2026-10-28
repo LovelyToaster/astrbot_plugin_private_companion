@@ -44,13 +44,6 @@ class MemoryService:
         self.activity = activity
         return self.activity
 
-    def attach_game(self, external, *, require_running=None):
-        from .game_ingestion import MemoryGameIngestion
-        game = MemoryGameIngestion(self, external, require_running=require_running)
-        if self.game is not None:
-            self.game.close()
-        self.game = game
-        return game
 
     def bind_query_wire_v1(self, **binding):
         """Construct an explicitly bound query adapter for a trusted host registry."""

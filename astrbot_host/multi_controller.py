@@ -1,4 +1,4 @@
-﻿"""Shared-installation lifecycle and explicit native multi-target admission."""
+"""Shared-installation lifecycle and explicit native multi-target admission."""
 
 import asyncio
 from dataclasses import asdict, replace
@@ -20,7 +20,6 @@ from companion_v2.execution.models import TaskContext, TaskError, digest, requir
 from companion_v2.conversation.pokes import PokePolicy
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import ScopeKind, SubjectKind, SubjectRef
-from .integration_registry import IntegrationRegistry
 from companion_v2.storage.runtime import StorageRuntime
 from companion_v2.proactive.search_settings import SearchSettingsStore
 from .multi_authority import HOST_ID, MANIFEST, MultiAuthority
@@ -29,10 +28,8 @@ from .multi_settings import MultiHostSettings
 from .bootstrap_provider import resolve_bootstrap_provider
 from .group_settings import GroupTarget
 from .native import installed_native_types
-from .backup_api import apply_staged_restore
+from .storage_restore import apply_staged_restore
 from .storage_location import selected_backup_directory
-from .native_extensions import NativeExtensionRegistry, together_execution_binding
-from .native_extensions.builtins import MANAGED_EXTENSIONS, create_bundled_extensions
 from .settings import DELIVERY_AUTHORIZATION_TTL, INSTALLATION_PREFIX, PROFILE_PATTERN, HostControlError
 from .binding import describe_pin, event_identity, is_private_message, message_text, parse_bind_command
 from .calendar_command import receive_calendar_command
@@ -55,13 +52,11 @@ class AstrBotMultiController:
         self.lifecycle_token = uuid4().hex
         self.config = config
         self.context, self.data_root = context, Path(data_root).resolve()
-        self.integration = IntegrationRegistry(context)
         self.native_types = native_types or installed_native_types()
         self.now = now or (lambda: datetime.now(timezone.utc))
         self.runtime = self.authority = self.session = self.last_session = None
         # The dashboard can report whether a staged restore was applied at open.
         self.last_restore = None
-        self.native_extensions = None
         self._accepting = self._terminated = False
         # Lifecycle work may wait on AstrBot; keep that wait out of the lock
         # shared by Dashboard data APIs.
@@ -81,8 +76,6 @@ class AstrBotMultiController:
             self.settings = None
             self.settings_error = (error if isinstance(error, HostControlError) else
                                    HostControlError("host_poke_settings_invalid", str(error)))
-        from .multi_api import MultiHostWebAPI
-        self.web_api = MultiHostWebAPI(self)
 
     def refresh_settings(self):
         try:
@@ -598,18 +591,10 @@ class AstrBotMultiController:
         personas = tuple(HostPersona(item["bot_id"], item["persona_id"],
             SubjectRef(item["role"]["installation_id"], SubjectKind.BOT, item["role"]["subject_id"]), item["instruction_hash"])
             for item in manifest["personas"])
-        if self.native_extensions is not None:
-            await self.native_extensions.aclose()
-        bundled_extensions, bundled_issues = create_bundled_extensions(self.runtime.data_root, now=self.now, context=self.context, controller=self)
-        self.native_extensions = NativeExtensionRegistry(self.context, now=self.now,
-            together_execution=together_execution_binding(self.settings.common),
-            image_settings_path=self.data_root / "model_image_routes.json",
-            bundled_extensions=bundled_extensions, bundled_issues=bundled_issues,
-            managed_extensions=MANAGED_EXTENSIONS)
         search_provider_resolver = SearchSettingsStore(self.data_root).selected_provider_id
         self.session = MultiHostSession(self.runtime, self.context, settings=self.settings, personas=personas,
             authority=self.authority, native_types=self.native_types, provider_fingerprint=manifest["provider_fingerprint"],
-            runtime_instance_id="astrbot-multi-" + uuid4().hex, native_tool_port=self.native_extensions, now=self.now,
+            runtime_instance_id="astrbot-multi-" + uuid4().hex, now=self.now,
             persona_window_snapshot_lookup=self.session_topology.persona_selection_snapshot,
             persona_window_snapshot_update=self.session_topology.update_persona_selection_snapshot,
             news_port=configured_news_port(self.config, context=self.context,
@@ -631,7 +616,7 @@ class AstrBotMultiController:
             self.session.application.keyword_materials = KeywordMaterials((
                 balance_keyword_material(self.session.application),
                 model_route_keyword_material(self.session.application, self.context,
-                                             native_tool_port=self.native_extensions),
+                                             native_tool_port=None),
                 web_read_keyword_material(self.session.application),
             ))
         except Exception as error:
@@ -795,17 +780,10 @@ class AstrBotMultiController:
                         self.runtime.close()
                         self.runtime = self.authority = None
                     raise
-                if self.native_extensions is not None:
-                    await self.native_extensions.aclose()
-                    self.native_extensions = None
                 self.session = self.last_session = None
                 self.refresh_settings()
                 self._accepting = False
                 self.last_failure = None
-                registered = bool(self.web_api._registered_routes)
-                if registered:
-                    self.unregister_routes()
-                    self.register_routes()
                 result = {"saved": True, "requires_reload": False, "requires_initialize": False,
                           "started": False}
         # The old runtime is released before this point.  Re-enter the public
@@ -879,9 +857,6 @@ class AstrBotMultiController:
         self.settings, self.settings_error = settings, None
         self._storage_profile_root, self._adopting_legacy_profile = root, adopting_legacy_profile
         self.authority.settings = settings
-        if self.web_api._registered_routes:
-            self.unregister_routes()
-            self.register_routes()
         logger.info("[CompanionV2] 已移除重复迁移的旧私聊目标，恢复已保存的角色映射")
         return restored
 
@@ -912,6 +887,10 @@ class AstrBotMultiController:
                         await asyncio.to_thread(self.authority.require_manifest, manifest)
                     if self.session is None or self.session.application.state != "new":
                         await self._assemble(manifest)
+                    from .lite_configuration import apply_core_preferences
+                    # A failed start can leave an assembled session. Validate on
+                    # every attempt so a retry cannot bypass an invalid form.
+                    apply_core_preferences(self)
                     session = self.session
                     task, model = await asyncio.to_thread(self._startup_generations)
                     task_generation = task["generation"] if task else 0
@@ -1311,6 +1290,20 @@ class AstrBotMultiController:
             except Exception as error:
                 return self._failure(error)
 
+    def target_inventory(self):
+        """Return configured targets without advertising absent management pages."""
+        settings = self.settings
+        if settings is None:
+            return []
+        return [{**vars(target),
+                 "scope_kind": "group" if isinstance(target, GroupTarget) else "private",
+                 "roles": [{"role_id": role,
+                            "persona_ids": [p.persona_id for p in settings.personas
+                                            if p.bot_id == target.bot_id and p.role_id == role]}
+                           for role in sorted({p.role_id for p in settings.personas
+                                               if p.bot_id == target.bot_id})]}
+                for target in settings.all_targets]
+
     def status(self):
         session = self.session or self.last_session
         return {"mode": "multi", "enabled": self.settings.enabled if self.settings else False,
@@ -1324,45 +1317,35 @@ class AstrBotMultiController:
                 "accepting": self._accepting and session is not None and session.application.state == "running",
                 "failure_code": session.application.failure_code if session else None,
                 "failure_detail": session.application.failure_detail if session else None,
-                "targets": self.web_api.target_inventory(), "last_failure": self.last_failure,
+                "targets": self.target_inventory(), "last_failure": self.last_failure,
                 "settings_error": getattr(self.settings_error, "code", None),
                 "parser_availability": parser_availability()}
 
-    def register_routes(self):
-        self.web_api.register()
 
-    def unregister_routes(self):
-        self.web_api.unregister()
 
     async def terminate(self):
         self._terminated, self._accepting = True, False
         if self._termination_task is not None:
             return
-        try:
-            await self.session_topology.close()
-            result = await self.stop(grace_seconds=2)
-            if result.is_success:
-                report = result.unwrap()
-                state = report.get("state") if isinstance(report, dict) else report.state
-            else:
-                state = None
-            if state != "stopped" and self.session is not None:
-                logger.warning("[CompanionV2] 工作任务仍在退出，保留存储直到停止证明写入完成")
-                self._termination_task = asyncio.create_task(self._finish_termination(),
-                    name="companion:host-drain")
-            else:
-                await self._release_runtime()
-        finally:
-            self.unregister_routes()
+        await self.session_topology.close()
+        result = await self.stop(grace_seconds=2)
+        if result.is_success:
+            report = result.unwrap()
+            state = report.get("state") if isinstance(report, dict) else report.state
+        else:
+            state = None
+        if state != "stopped" and self.session is not None:
+            logger.warning("[CompanionV2] 工作任务仍在退出，保留存储直到停止证明写入完成")
+            self._termination_task = asyncio.create_task(self._finish_termination(),
+                name="companion:host-drain")
+        else:
+            await self._release_runtime()
 
     async def _release_runtime(self):
         async with self._control_lock:
             if self.runtime is not None:
                 self.runtime.close()
                 self.runtime = self.authority = None
-            if self.native_extensions is not None:
-                await self.native_extensions.aclose()
-                self.native_extensions = None
 
     async def _finish_termination(self):
         try:

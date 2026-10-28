@@ -38,7 +38,6 @@ from .media.service import ConversationImages
 from .media.reply import ConversationReplyImages
 from .media.generated import GeneratedImages, INSTRUCTION as GENERATED_IMAGE_INSTRUCTION
 from .media.quota import ImageQuotaGate
-from .media.screen import ScreenImages, INSTRUCTION as SCREEN_INSTRUCTION
 from .media.audio.events import AudioConversationEvent
 from .media.audio.models import AudioDescriptor, fits_audio_budget, INSTRUCTION as AUDIO_INSTRUCTION
 from .media.audio.service import ConversationAudio
@@ -150,7 +149,6 @@ class ConversationMessages:
         self.images = ConversationImages(self)
         self.generated_images = GeneratedImages(self)
         self.image_quota = ImageQuotaGate(self)
-        self.screen_images = ScreenImages(self)
         self.audio = ConversationAudio(self)
         self.videos = ConversationVideos(self)
         self.reply_images = ConversationReplyImages(self)
@@ -735,14 +733,6 @@ class ConversationMessages:
         semantic = getattr(self, "semantics", None)
         if include_tools and semantic is not None:
             request = semantic.augment(row, context, request)
-        if include_tools:
-            screens = self.screen_images.read_batch(row, context, at, request)
-            if screens:
-                materials = tuple(PromptMaterial(item.owner, item.purpose, item.payload, item.source)
-                    for image in screens for item in self.screen_images.contributions(image))
-                request = replace(request, images=request.images + screens,
-                    context=replace(request.context, materials=request.context.materials + materials),
-                    instruction=request.instruction + "\n" + SCREEN_INSTRUCTION)
         if generated_image_instruction:
             request = replace(request, instruction=request.instruction + "\n" + GENERATED_IMAGE_INSTRUCTION)
         actions = ["text", "silent"]

@@ -38,7 +38,6 @@ from .weather_change_events import WeatherChangeContactEvents
 from .official_alert_events import OfficialAlertContactEvents
 from .balance_events import BalanceContactEvents
 from .news_events import NewsContactEvents
-from .screen_events import ScreenContactEvents
 from .relationship_events import RelationshipContactEvents
 from .wake_events import WakeContactEvents
 from .models import EvidenceSnapshot, Opportunity, Thought, ThoughtKind
@@ -70,7 +69,6 @@ SYNTHETIC_DIAGNOSTIC_EVENTS = {
     "creation": "角色刚写下一句短句：给普通的一天留一盏小灯。想把这一句和自己的创作想法分享给对方；不杜撰书名或阅读进度。",
     "news": "一则创作工具资讯介绍了把简单手绘变成小动画的功能；角色对这个亮点好奇，想分享自己的想法，不增加产品名、发布机构或未经提供的细节。",
     "environment": "角色配置地点的天气情境是晴、21℃；角色想分享一点自己的感受，不推断对方所在地、未来天气或出行需求。",
-    "screen": "本轮屏幕情境仅包含一张普通拼图，颜色从浅蓝逐渐变深；角色对这个明确观察有一点想法想分享，不推断对方意图、任务或情绪。",
 }
 
 SYNTHETIC_ENVIRONMENT_EVENTS = {
@@ -85,11 +83,10 @@ SYNTHETIC_ENVIRONMENT_EVENTS = {
 class ContactSchedule:
     def __init__(self, contacts, messages, *, notify, role_life=None, role_growth=None, role_journal=None,
                  calendar=None, relationships=None, role_state=None, weather_port=None,
-                 weather_alert_port=None, balance_port=None, news_port=None, screen_peek=None,
+                 weather_alert_port=None, balance_port=None, news_port=None,
                  wake_port=None, health_source=None, health_settings=None):
         self.contacts, self.messages, self.notify = contacts, messages, notify
         self.tasks, self.runtime = contacts.tasks, contacts.runtime
-        self.screen_peek = screen_peek
         self.role_state = role_state
         self.wake_events = (WakeContactEvents(contacts, role_state, wake_port)
                             if wake_port is not None else None)
@@ -117,7 +114,6 @@ class ContactSchedule:
             contacts, role_state, weather_alert_port) if role_state is not None else None
         self.balance_events = BalanceContactEvents(contacts, balance_port)
         self.news_events = NewsContactEvents(contacts, news_port)
-        self.screen_events = ScreenContactEvents(contacts)
         self.relationship_events = RelationshipContactEvents(contacts, messages)
         self._diagnostics_cleaned_at = None
 
@@ -432,8 +428,6 @@ class ContactSchedule:
             self.balance_events.validate(context, origin["balance_event"], at)
         if "news_event" in origin:
             self.news_events.validate(context, origin["news_event"], at)
-        if "screen_event" in origin:
-            self.screen_events.validate(context, origin["screen_event"], at)
         if "relationship_event" in origin:
             self.relationship_events.validate(context, event, origin["relationship_event"], at)
         if "followup_event" in origin:
@@ -594,12 +588,6 @@ class ContactSchedule:
             if more:
                 self._note_window(context, row, at, "sources", "pending", "calendar_transition_pending")
                 return None
-        candidate = self.screen_events.select(context, preferences, at) if hour_allowed else None
-        if candidate is not None:
-            opportunity, intents, marker = candidate
-            intents = tuple(replace(intent, thought=replace(intent.thought, evidence=EvidenceSnapshot(
-                context.scope, at, (event.source, *intent.thought.evidence.sources)))) for intent in intents)
-            return context, opportunity, intents, batch["role_instruction"], {**origin, "screen_event": marker}
         candidate = self.date_events.select(context, preferences, at) if hour_allowed else None
         if candidate is not None:
             opportunity, intents, marker = candidate
@@ -876,12 +864,6 @@ class ContactSchedule:
             if result is not None:
                 return result
 
-        if purpose == "screen":
-            candidate, source_stages = await self.screen_events.diagnostic(context, self.screen_peek,
-                test_id=test_id, role_instruction=batch["role_instruction"])
-            result = direct(candidate, "screen_event", "真实窥屏与视觉分析", "glance")
-            if result is not None:
-                return result
 
         if purpose in ("affection", "care") and self.reminiscence_events is not None:
             candidate, _ = self.reminiscence_events.select(context, preferences, at, purpose=purpose)
@@ -1414,27 +1396,6 @@ class ContactSchedule:
         with self.runtime.transaction():
             self.contacts.persona_judge.withheld(row["origin_key"], row["contact_id"], failure, reason=reason)
 
-    def _peek(self, row, at):
-        """Schedule one autonomous Screen peek for this window, if one is due.
-
-        A peek is its own supervised device call, so nothing here waits for the
-        camera: the plan for this tick simply stays empty until the interpretation
-        of the adopted original exists.
-        """
-        service = self.screen_peek
-        if service is None:
-            return False
-        try:
-            context = TaskContext.restore(json.loads(row["context_json"]))
-            if not service.ready(context, at):
-                return False
-            preferences = require(self.contacts.preferences.read(context, observed_at=at))
-            decision = self.screen_events.peek_due(context, preferences, at)
-            if decision is None:
-                return False
-            return service.request(context, decision, request_ref=row["batch_id"]) is not None
-        except TaskError:
-            return False
 
     def _legacy_rows(self, cursor):
         return self.runtime.read_all("""SELECT f.sequence, b.* FROM conversation_flows f
@@ -1498,10 +1459,6 @@ class ContactSchedule:
     def _plan_one(self, row, now):
         """Evaluate one candidate off the write transaction."""
         if self._closed or row["origin_key"] in self._workers:
-            return None
-        if self._peek(row, now):
-            context = TaskContext.restore(json.loads(row["context_json"]))
-            self._note_window(context, row, now, "sources", "pending", "screen_observation_pending")
             return None
         return self._plan(row, now)
 
@@ -1637,7 +1594,6 @@ class ContactSchedule:
             self.health_events.close()
         self.balance_events.close()
         self.news_events.close()
-        self.screen_events.close()
 
     def cancel_running(self, *, close_sources=True):
         self._closed = True

@@ -645,14 +645,12 @@ class GeneratedImages:
     def validate_refresh(self, batch, context, at, original, current):
         """Allow only this turn's currently governed provider images to be added."""
         from companion_v2.conversation.foreground import PromptMaterial
-        from .screen import INSTRUCTION as SCREEN_INSTRUCTION
         generated = self.read_batch(batch, context, at)
         semantic = getattr(self.messages, "semantics", None)
         reactions, reaction_materials = semantic.reactions.read_batch(batch, context) if semantic else ((), ())
         baseline = SimpleNamespace(event=original.event, images=original.images + generated + reactions,
                                    videos=current.videos, audios=current.audios)
-        screens = self.messages.screen_images.read_batch(batch, context, at, baseline)
-        if current.images != baseline.images + screens:
+        if current.images != baseline.images:
             return False
         expected_reply = bool(baseline.images) and self.messages.reply_images.enabled and context.scope.kind in (
             ScopeKind.PRIVATE, ScopeKind.GROUP)
@@ -664,12 +662,5 @@ class GeneratedImages:
         actual = tuple(m for m in current.context.materials if m.source in references
                        or m.owner == OWNER or m.purpose.startswith("generated_image:"))
         actual_reactions = tuple(m for m in current.context.materials if m.owner == "expression.reactions")
-        expected_screens = tuple(PromptMaterial(c.owner, c.purpose, c.payload, c.source)
-            for image in screens for c in self.messages.screen_images.contributions(image))
-        screen_refs = {i.source for i in screens}
-        actual_screens = tuple(m for m in current.context.materials if m.source in screen_refs
-                               or m.purpose.startswith("screen_capture:"))
         return (actual == expected and actual_reactions == reaction_materials
-                and actual_screens == expected_screens
-                and (not generated or INSTRUCTION in current.instruction)
-                and (not screens or SCREEN_INSTRUCTION in current.instruction))
+                and (not generated or INSTRUCTION in current.instruction))

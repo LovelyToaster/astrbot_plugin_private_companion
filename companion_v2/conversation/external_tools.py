@@ -32,7 +32,6 @@ from companion_v2.sources.models import GovernanceState, SourceRecord
 from .foreground import PromptMaterial
 from .media.models import CapturedImage, check_manifest
 from .media.generated import GROUP_IMAGE_ACTIONS, IMAGE_ACTIONS, REJECTED_ADOPTION
-from .media.screen import ACTION as SCREEN_ACTION, REJECTED_ADOPTION as SCREEN_REJECTED_ADOPTION
 from .messages import source_from_document
 
 
@@ -331,50 +330,14 @@ class ExternalToolExecutor:
         call = self.runtime.read_one("SELECT * FROM conversation_tool_calls WHERE task_id = ? AND tool_call_id = ?",
                                     (row["parent_task_id"], row["tool_call_id"]))
         if call is None:
-            call = self._authoring_parent(row, parent)
+            raise TaskError("external_task_mismatch", "tool call does not belong to the original model request")
         if call is None or call["attempt_id"] != parent.attempt_id or call["batch_id"] != row["batch_id"]:
             raise TaskError("external_task_mismatch", "child must retain its actual model request")
-        if call["action"].startswith("content.authoring."):
-            allowed = ({"content.work.create"} if call["action"] == "content.authoring.create" else
-                       {"content.work.list", "content.work.describe", "content.work.read",
-                        "content.work.save_candidate"})
-            if row["action"] not in allowed:
-                raise TaskError("external_task_mismatch", "Content subcall is outside its authoring request")
         elif (call["action"], call["arguments_json"]) != (row["action"], row["arguments_json"]):
             raise TaskError("external_task_mismatch", "child must retain its actual model request")
         require(self.tasks.validate(TaskClaim(parent.task_id, parent.attempt_id, parent.generation)))
         return True
 
-    def _authoring_parent(self, invocation, parent):
-        """Resolve a trusted Content subcall to the model's high-level authoring call."""
-        if not invocation["tool_call_id"].startswith("content-authoring-subcall:"):
-            return None
-        try:
-            _, step_text, _ = invocation["tool_call_id"].split(":", 2)
-            step = int(step_text)
-        except (TypeError, ValueError):
-            return None
-        from companion_v2.conversation.content.authoring_workflow import (
-            ACTIONS as AUTHORING_ACTIONS, CONTINUE_ACTION, CREATE_ACTION)
-        permitted = ({"content.work.create"} if invocation["action"] == "content.work.create" else
-                     {"content.work.list", "content.work.describe", "content.work.read",
-                      "content.work.save_candidate"})
-        if invocation["action"] not in permitted:
-            return None
-        rows = self.runtime.read_all("""SELECT * FROM conversation_tool_calls
-            WHERE task_id=? AND attempt_id=? AND action IN (?,?)
-            ORDER BY sequence""", (invocation["parent_task_id"], parent.attempt_id,
-                CREATE_ACTION, CONTINUE_ACTION))
-        for row in rows:
-            expected = "content-authoring-subcall:" + str(step) + ":" + digest(
-                [invocation["parent_task_id"], row["tool_call_id"], step])
-            if (row["action"] in AUTHORING_ACTIONS and invocation["tool_call_id"] == expected
-                    and (row["state"] in ("started", "succeeded", "unknown"))):
-                if (row["action"] == CREATE_ACTION and invocation["action"] != "content.work.create"
-                        or row["action"] == CONTINUE_ACTION and invocation["action"] == "content.work.create"):
-                    return None
-                return row
-        return None
 
     async def execute(self, run, call):
         descriptor = self.providers[call.action].descriptor
@@ -417,73 +380,6 @@ class ExternalToolExecutor:
             self._unknown(identifier)
             raise
 
-    async def execute_internal(self, run, parent_call, model_call_id, action, arguments, *, step):
-        """Run a trusted Content operation inside one authorized authoring tool call."""
-        from types import SimpleNamespace
-        from companion_v2.conversation.content.authoring_workflow import ACTIONS as AUTHORING_ACTIONS
-
-        if (action not in self.actions or not action.startswith("content.work.")
-                or type(step) is not int or step < 1 or run.task.spec.context.scope.kind is not ScopeKind.PRIVATE):
-            raise TaskError("content_authoring_action", "internal writes require a private native Content action")
-        descriptor = self.providers[action].descriptor
-        if descriptor.binding.provider != "content.native" or descriptor.source_owner != "content.native":
-            raise TaskError("content_provider_changed", "internal authoring requires the original Content owner")
-        inner_id = "content-authoring-subcall:" + str(step) + ":" + digest(
-            [run.task.task_id, parent_call.call_id, step])
-        call = SimpleNamespace(call_id=inner_id, action=action, arguments_json=encode(arguments))
-        with self.runtime.transaction() as connection:
-            run.validate()
-            plan = connection.execute("SELECT plan_json FROM model_requests WHERE task_id=?",
-                                      (run.task.task_id,)).fetchone()
-            original = connection.execute("""SELECT * FROM conversation_tool_calls
-                WHERE task_id=? AND tool_call_id=?""", (run.task.task_id, parent_call.call_id)).fetchone()
-            if (plan is None or parent_call.action not in json.loads(plan["plan_json"]).get("tool_actions", ())
-                    or original is None or original["model_call_id"] != model_call_id
-                    or original["action"] not in AUTHORING_ACTIONS or original["state"] != "started"
-                    or original["arguments_json"] != parent_call.arguments_json):
-                raise TaskError("content_authoring_request_mismatch", "Content must answer the original authoring request")
-            allowed = ({"content.work.create"} if original["action"] == "content.authoring.create" else
-                       {"content.work.list", "content.work.describe", "content.work.read",
-                        "content.work.save_candidate"})
-            if action not in allowed:
-                raise TaskError("content_authoring_action", "the authoring request cannot perform this Content action")
-            self._admit(descriptor, run.task.spec.context, self.tasks.now())
-            _check_arguments(json.loads(descriptor.tool.parameters_json), json.loads(call.arguments_json))
-            prior = connection.execute("SELECT * FROM extension_tool_invocations WHERE parent_task_id=? AND tool_call_id=?",
-                                       (run.task.task_id, inner_id)).fetchone()
-            if prior is not None:
-                if (prior["action"], prior["arguments_json"]) != (action, call.arguments_json):
-                    raise TaskError("tool_call_conflict", "an original Content subcall cannot change arguments")
-                if prior["state"] not in ("succeeded", "failed"):
-                    raise TaskError("external_effect_unresolved", "an unknown Content subcall cannot be replayed")
-                return self.snapshot(prior, run.task.spec.context, self.tasks.now())
-            unresolved = connection.execute("""SELECT 1 FROM extension_tool_invocations
-                WHERE parent_task_id=? AND action=? AND arguments_json=?
-                AND state IN ('queued','running','unknown') LIMIT 1""",
-                (run.task.task_id, action, call.arguments_json)).fetchone()
-            if unresolved:
-                raise TaskError("external_effect_unresolved", "an original unknown Content action cannot be repeated")
-            identifier = "extension-" + digest([run.task.task_id, inner_id])
-            child_id = "child-" + identifier
-            connection.execute("""INSERT INTO extension_tool_invocations
-                (invocation_id,parent_task_id,tool_call_id,batch_id,task_id,action,descriptor_json,
-                 provider_json,arguments_json,state,effect,created_at)
-                VALUES (?,?,?,?,?,?,?,?,?,'queued','none',?)""",
-                (identifier, run.task.task_id, inner_id, run.task.spec.request_ref, child_id, action,
-                 encode(descriptor), encode(descriptor.binding), call.arguments_json, stamp(self.tasks.now())))
-            require(self.tasks.submit(TaskSpec(child_id, run.task.spec.context, descriptor.kind, identifier,
-                identifier, self.tasks.now(), run.task.spec.deadline_at)))
-        try:
-            result = require(await self.runner.run(run.task.spec.context, child_id)).task
-            if result.state in ("created", "retry_scheduled"):
-                require(self.tasks.cancel(run.task.spec.context, child_id, expected_revision=result.revision))
-                self._not_dispatched(identifier, "external_capacity_unavailable")
-            elif self._row(identifier)["state"] == "queued":
-                self._not_dispatched(identifier, "external_not_started")
-            return self.snapshot(self._row(identifier), run.task.spec.context, self.tasks.now())
-        except BaseException:
-            self._unknown(identifier)
-            raise
 
     def _not_dispatched(self, identifier, code):
         with self.runtime.transaction() as connection:
@@ -574,7 +470,7 @@ class ExternalToolExecutor:
                         raise
                     source = replace(source, state=GovernanceState.REVOKED)
                     require(self.messages.sources.publish(source, observed_at=self.tasks.now()))
-                if invocation.descriptor.tool.action in (*IMAGE_ACTIONS, SCREEN_ACTION) and source.state is GovernanceState.REVOKED:
+                if invocation.descriptor.tool.action in IMAGE_ACTIONS and source.state is GovernanceState.REVOKED:
                     adoption_error = "source_revoked"
                     try:
                         metadata = json.loads(source.payload)
@@ -608,8 +504,7 @@ class ExternalToolExecutor:
                 receipt_ref = ?, result_source_json = ?, result_hash = ?, error_code = ?, finished_at = ?
                 WHERE invocation_id = ?""", (response.state, response.effect, response.operation_id, response.receipt_ref,
                 encode(source.reference) if source else None, digest(source) if source else None,
-                (SCREEN_REJECTED_ADOPTION if invocation.descriptor.tool.action == SCREEN_ACTION
-                 else REJECTED_ADOPTION) + adoption_error if adoption_error is not None else
+                REJECTED_ADOPTION + adoption_error if adoption_error is not None else
                 None if response.state == "succeeded" else response.error_code or
                 ("external_not_started" if response.state == "failed" else "external_result_unknown"),
                 stamp(self.tasks.now()), invocation.invocation_id))
@@ -664,24 +559,6 @@ class ExternalToolExecutor:
                 if stored is None or stored["state"] != GovernanceState.REVOKED.value:
                     raise TaskError("generated_image_changed", "rejected adoption must remain unavailable")
                 return result, None
-            if row["action"] == SCREEN_ACTION:
-                if self.messages.screen_images.rejected(row) is not None:
-                    reference = source_from_document(json.loads(row["result_source_json"]))
-                    stored = self.runtime.read_one("""SELECT state FROM sources WHERE source_id = ?
-                        AND lineage_id = ? AND source_revision = ?""",
-                        (reference.source_id, reference.version.lineage_id, reference.version.revision))
-                    if stored is None or stored["state"] != GovernanceState.REVOKED.value:
-                        raise TaskError("screen_original_changed", "rejected Screen material must remain unavailable")
-                    return result, None
-                capture_id = "screen-capture-" + digest(row["invocation_id"])
-                capture = require(self.messages.screen_images.screens.published_reference(
-                    capture_id, scope=context.scope))
-                checked = self.messages.screen_images.screens.read_capture(
-                    capture, resolved=context.actor, observed_at=at)
-                if not checked.is_success:
-                    if checked.failure.code in {"source_revoked", "source_expired", "asset_revoked"}:
-                        return result, None
-                    raise TaskError(checked.failure.code, checked.failure.reason)
             reference = source_from_document(json.loads(row["result_source_json"]))
             require(self.messages.sources.validate_reference(reference, observed_at=at))
             source = require(self.messages.sources.read(reference, resolved=context.actor, capability=descriptor.binding.capability,

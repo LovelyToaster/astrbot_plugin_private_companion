@@ -1,4 +1,4 @@
-﻿"""One explicit opportunity, one supervised model decision, one durable delivery.
+"""One explicit opportunity, one supervised model decision, one durable delivery.
 
 Trusted producers, including the conversation scheduler, supply the cause and
 current persona; interrupted model work is never silently replayed.

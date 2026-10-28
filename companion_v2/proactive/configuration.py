@@ -26,7 +26,6 @@ PURPOSES = MappingProxyType({
     "chat": "日常话题", "greeting": "问候与纪念", "life": "分享自己的生活", "creation": "作品与阅读",
     "news": "外部资讯", "followup": "接回旧话题", "invitation": "共同活动邀请",
     "reminder": "约定与提醒", "environment": "环境与状态变化", "meal": "饭点问候",
-    "screen": "已授权屏幕观察",
 })
 LAYERS = (ConfigLayer.INSTALLATION, ConfigLayer.ROLE, ConfigLayer.RELATIONSHIP, ConfigLayer.WINDOW)
 WINDOW_QUOTA_FIELDS = frozenset({"max_contacts_24h"})
@@ -236,12 +235,9 @@ def configuration_fields():
                 "web_exploration_enabled": False, "web_exploration_interests": "",
                 "news_daily_hot_read_enabled": False, "news_hot_sources": "weibo,hackernews",
                 "external_event_self_link_enabled": True,
-                "screen_glance_enabled": False,
                 # T20: the two V1 peek initiators. Both stay off until an operator
                 # enables them for this window; the capture itself is still a native
                 # device call that the Screen extension may refuse.
-                "screen_glance_goodnight_enabled": False,
-                "screen_glance_followup_enabled": False,
                 "official_alert_min_severity": "",
                 "balance_awareness_enabled": False, "balance_include_amount_in_message": False,
                 "voice_action_enabled": False, "poke_action_enabled": False,
@@ -305,13 +301,8 @@ def configuration_fields():
             ("web_exploration_result_count", 8, 1, 30),
             ("news_hot_result_count", 10, 3, 30),
             ("external_event_self_link_cooldown_hours", 12, 0, 168),
-            ("screen_glance_daily_limit", 1, 0, 20),
-            ("screen_glance_cooldown_minutes", 240, 0, 10080),
             # V1 goodnight_screen_check_delay_minutes (1-180) and the unanswered
             # peek window/cooldown (10-240 / 30-1440).
-            ("screen_glance_goodnight_delay_minutes", 45, 1, 180),
-            ("screen_glance_followup_after_minutes", 45, 10, 240),
-            ("screen_glance_followup_cooldown_minutes", 180, 30, 1440),
             ("contact_followup_after_minutes", 45, 10, 1440),
             ("contact_followup_cooldown_minutes", 180, 30, 2880),
             ("balance_message_cooldown_hours", 24, 1, 168),

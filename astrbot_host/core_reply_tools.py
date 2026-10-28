@@ -32,10 +32,7 @@ MEMORY_READ_ACTIONS = frozenset({
 })
 GROUP_READ_ACTIONS = frozenset({"group.memory.query", "group.memory.legacy.query", "group.memory.operation"})
 TOOL_INSTRUCTION = """陪伴工具作用于当前会话与角色，日常聊天可直接回应，需要行动时再调用。工具材料供参考，按实际结果说明：查不到不证明从未发生；unknown 表示结果暂未确认，既不证明成功，也不证明失败或保存丢失。自然说明尚未确认，不编造已经拍好、生成后丢失等过程，也不更换调用编号或引导用户重做同一未知操作。只能用该能力提供的查询方式核对，其他工具查不到不能改变原操作状态。提醒登记不代表平台发送。
-证据句柄用于工具，当前消息需作为证据时先调用 turn.evidence；记忆提议引用本轮提供的真实句柄。来源通常不打断聊天，被追问时再自然说明。
-对方接受刚提出的具体游戏、共处或通话邀请时，调用当前开放的对应工具创建或接续活动，以成功结果为准并给出完整房间链接，不用口头报坐标代替真实对局。不编链接，不在入口未就绪或工具未开放时声称已建房、开局或拨通。
-按完整本轮原话分清双方先手与颜色，已被更正的旧选择不沿用。human_side 是用户方：五子棋中“你执黑”“你先下”或点名角色“黑先”表示角色黑、用户白，human_side=white；“我执黑”“我先下”才是 human_side=black。
-access_scope=same_device 的链接仅供运行 AstrBot 的电脑使用；public_access=unavailable 表示公网入口未就绪，不能把本机链接说成手机或外网入口。"""
+证据句柄用于工具，当前消息需作为证据时先调用 turn.evidence；记忆提议引用本轮提供的真实句柄。来源通常不打断聊天，被追问时再自然说明。"""
 EVIDENCE_SPEC = ToolSpec("turn.evidence", "读取本轮已认证发言的证据句柄，供记忆、日历、成长和关系提案使用。",
                         encode({"type": "object", "properties": {}, "additionalProperties": False}))
 
@@ -127,19 +124,8 @@ class _OfferedTool:
 
 class CoreReplyFunctionTool(FunctionTool):
     def __init__(self, session, offered):
-        from .core_reply_image_prompt import core_image_tool_contract
-        reference_limit = None
-        if offered.spec.action == "image.edit":
-            try:
-                from .model_route_material import image_edit_reference_limit
-                reference_limit = image_edit_reference_limit(
-                    getattr(session.application, "native_tool_port", None))
-            except Exception:
-                reference_limit = None
-        description, parameters = core_image_tool_contract(offered.spec.action, offered.spec.description,
-                                                          json.loads(offered.spec.parameters_json),
-                                                          reference_limit=reference_limit)
-        super().__init__(name=native_tool_name(offered.spec.action), description=description, parameters=parameters)
+        super().__init__(name=native_tool_name(offered.spec.action), description=offered.spec.description,
+                         parameters=json.loads(offered.spec.parameters_json))
         self._session, self._action = session, offered.spec.action
 
     async def call(self, context, **kwargs):
@@ -230,11 +216,6 @@ class CoreReplyToolSession:
         if external is not None:
             native_tools = tuple(spec for spec in external.catalog_for(context) if supports_native_external(spec.action))
             offered.extend(_OfferedTool(spec, "external") for spec in native_tools)
-            authoring = getattr(tools, "authoring", None)
-            if authoring is not None and _field(self.prepared, "native_input") is not None and _field(
-                    self.prepared, "native_source_future") is not None:
-                offered.extend(_OfferedTool(spec, "authoring") for spec in authoring.catalog_for(
-                    context, (spec.action for spec in native_tools)))
         if _field(self.prepared, "native_source_future") is not None:
             offered.append(_OfferedTool(EVIDENCE_SPEC, "evidence"))
         return tuple(offered)
@@ -379,10 +360,6 @@ class CoreReplyToolSession:
                     await self.wait_source()
                 result = await executor_for(self.application).execute(
                     self, native_call_id(wrapper, action, arguments), action, arguments)
-            elif offered.owner == "authoring":
-                from .core_reply_authoring import execute_core_authoring
-                result = await execute_core_authoring(self, wrapper, native_call_id(wrapper, action, arguments),
-                                                      action, arguments)
             elif offered.owner == "source":
                 from .core_reply_sources import execute_core_source_read
                 result = await execute_core_source_read(self, native_call_id(wrapper, action, arguments), arguments)
@@ -530,8 +507,7 @@ def inject_core_reply_tools(event, req, *, application):
             or session.prepared is not state.get("prepared")):
         session = CoreReplyToolSession(event, state, application)
         state["_tool_session"] = session
-    from .core_reply_image_prompt import core_image_tools, inject_core_image_prompt
-    offered, image_values = core_image_tools(session, session.catalog())
+    offered = session.catalog()
     semantic = getattr(application.tools, "semantic", None)
     if semantic is not None:
         from .core_reply_reaction_delivery import inject_core_reaction_instruction
@@ -546,17 +522,12 @@ def inject_core_reply_tools(event, req, *, application):
         current = getattr(req, "system_prompt", "") or ""
         if TOOL_INSTRUCTION not in current:
             req.system_prompt = (current.rstrip() + "\n\n" + TOOL_INSTRUCTION).lstrip()
-        if any(item.owner == "authoring" for item in offered):
-            from companion_v2.conversation.content.authoring_workflow import INSTRUCTION as AUTHORING_INSTRUCTION
-            if AUTHORING_INSTRUCTION not in req.system_prompt:
-                req.system_prompt += "\n\n" + AUTHORING_INSTRUCTION
         if any(item.owner == "diagnostics" for item in offered):
             from companion_v2.conversation.diagnostic_tools import DIAGNOSTIC_INSTRUCTION
             if DIAGNOSTIC_INSTRUCTION not in req.system_prompt:
                 req.system_prompt += "\n\n" + DIAGNOSTIC_INSTRUCTION
     elif getattr(req, "func_tool", None) is not None:
         req.func_tool = ToolSet(tools=existing)
-    inject_core_image_prompt(session, req, offered, image_values)
     return tuple(tool._action for tool in appended)
 
 

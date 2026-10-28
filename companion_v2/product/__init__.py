@@ -3,8 +3,8 @@
 from typing import Any
 
 PRODUCT_ID = "private_companion.v2"
-PRODUCT_DISPLAY_NAME = "我会永远陪着你"
-PRODUCT_VERSION = "7.0.0"
+PRODUCT_DISPLAY_NAME = "我会永远陪着你 Lite"
+PRODUCT_VERSION = "7.0.0+lite"
 PROTOCOL_VERSION = "companion.public-extension.v1"
 
 
@@ -44,12 +44,6 @@ CORE_COMPONENTS: tuple[dict[str, Any], ...] = (
         "label": "主动联系与后台任务",
         "description": "主动联系偏好、日程触发、任务监督、额度和恢复。",
         "routes": ("proactive.contacts", "tasks.supervisor", "agenda.background"),
-    },
-    {
-        "id": "capability_room",
-        "label": "能力管理与陪伴小屋",
-        "description": "能力注册、授权、配置投影和体素小屋家具入口。",
-        "routes": ("capability.inventory", "capability.configuration", "management.dashboard"),
     },
     {
         "id": "diagnostics",

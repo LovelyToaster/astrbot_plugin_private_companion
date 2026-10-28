@@ -126,15 +126,10 @@ async def run():
                 saved_config = config_file.read_bytes()
             assert (owner, manifest, routes, names) == (initial_owner, initial_manifest, initial_routes, initial_handlers)
             assert config_file.read_bytes() == saved_config
-            state_path = next(role["state_api"] for target in controller.web_api.target_inventory()
-                              for role in target["roles"] if role["role_id"] == "role-a")
-            handler = next(handler for route, handler, methods, _ in native.registered_web_apis
-                           if route == state_path and methods == ["GET"])
-            req = Request({"type": "http", "method": "GET", "path": state_path,
-                           "headers": [], "query_string": b""})
-            with bind_request_context(PluginRequest(req, username="admin")):
-                result = await handler()
-            assert result["status"] == "ok", result
+            assert routes == set(), routes
+            assert metadata.pages == [] or metadata.pages is None
+            assert controller.session.native_tool_port is None
+            assert not any('.native_extensions' in name for name in sys.modules)
             assert native.provider.client.state.calls == []
             assert all(action in {"get_login_info", "get_friend_list", "get_stranger_info"}
                        for platform in native.platforms.values() for action, _ in platform.client._api._wsr_api.calls)
@@ -176,6 +171,14 @@ async def run():
                 await asyncio.sleep(0.05)
                 native.platforms = platforms
                 plugin = await check_running()
+                binding_event = FakeEvent(SimpleNamespace(platform=native.platform), text="companion_bind")
+                binding_event.stop_event = lambda: None
+                binding_event.plain_result = lambda text: text
+                await plugin.receive_companion_binding(binding_event)
+                assert len(binding_event.sent) == 1
+                assert "qq-main" in binding_event.sent[0] and "参与者：200" in binding_event.sent[0]
+                assert "没有修改权限或绑定" in binding_event.sent[0]
+                assert config_file.read_bytes() == saved_config
                 for cycle in range(3):
                     previous_plugin = plugin
                     old_entry = star_map[entry_name].module
@@ -191,7 +194,7 @@ async def run():
                     assert star_map[entry_name].module is not old_entry
                     await previous_plugin.terminate()
                     assert star_map[entry_name].module is sys.modules[entry_name]
-                    assert plugin.staging._accepting and native.registered_web_apis
+                    assert plugin.staging._accepting and not native.registered_web_apis
                 entry = star_map[entry_name].module
                 draining = entry.PrivateCompanionV2StagingPlugin.__new__(entry.PrivateCompanionV2StagingPlugin)
                 draining.staging = SimpleNamespace(runtime=object(), terminate=AsyncMock())
@@ -215,7 +218,8 @@ async def run():
                     check_stopped(plugin)
     print(json.dumps({"startup_cycles": starts, "disable_enable_cycles": 3, "disabled_reload": True,
                       "active_reload": True, "saved_profile_restored": True, "same_role_owner": True,
-                      "state_routes_readable": True, "duplicate_handlers": 0, "duplicate_routes": 0,
+                      "no_page_routes": True, "binding_guidance": True,
+                      "duplicate_handlers": 0, "duplicate_routes": 0,
                       "foreign_modules_preserved": True, "deferred_drain_imports": True,
                       "failed_constructor_reload": True,
                       "model_calls": 0, "platform_sends": 0,

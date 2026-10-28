@@ -17,10 +17,14 @@ from companion_v2.identity_policy.models import AuthenticatedHostPrincipal, Auth
 from companion_v2.identity_policy.object_access import ObjectAccessPolicy
 from companion_v2.identity_policy.personas import ConversationRoute, PersonaBinding, PersonaDirectory, PersonaSelector, SelectorKind
 from companion_v2.identity_policy.repository import PersistentIdentityDirectory
-from companion_v2.screen.models import SCREEN_EXTENSION, SCREEN_READ
 from companion_v2.storage.runtime import StorageRuntime
 from tests.g6_support import descriptor
 
+
+# Synthetic policy identifiers; no screen implementation is loaded.
+SCREEN_EXTENSION = "companion.screen"
+SCREEN_PROCESS = "screen.process"
+SCREEN_READ = "screen.read"
 
 NOW = datetime(2026, 9, 21, tzinfo=timezone.utc)
 INSTALLATION = "management-installation"

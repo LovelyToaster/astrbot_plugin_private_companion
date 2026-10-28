@@ -1,21 +1,7 @@
 {
-  "performance": {
-    "description": "性能模式（低配置设备）",
-    "hint": "放在官方配置页顶部。开启并重载插件后，陪伴小屋页面只显示轻量状态页，不再加载 3D 小屋、全部样式与工作区脚本；插件同时跳过陪伴小屋的页面管理路由注册。聊天、记忆与已配置的主动功能继续运行。关闭并重载即可恢复小屋。",
-    "type": "object",
-    "items": {
-      "enabled": {
-        "description": "启用性能模式",
-        "hint": "适合低配置设备或远程访问卡顿的环境。保存后请重载插件；性能模式下如需修改高级设置，请先关闭本项并重载。",
-        "type": "bool",
-        "default": false
-      }
-    }
-  },
   "storage": {
     "description": "资料存储与清理",
     "hint": "存储位置变更会在重启插件时迁移 V2 资料；清理策略只管理已完成的备份快照。",
-    "invisible": true,
     "type": "object",
     "items": {
       "path": {
@@ -44,7 +30,7 @@
   },
   "staging": {
     "description": "兼容设置（高级）",
-    "hint": "旧版单目标配置，仅用于升级时迁移；V2 运行状态由「陪伴小屋 → 账号与会话」统一管理。",
+    "hint": "仅用于兼容旧版单目标配置；新安装请填写账号与会话。",
     "invisible": true,
     "type": "object",
     "items": {
@@ -74,7 +60,7 @@
   },
   "target": {
     "description": "旧版绑定（高级）",
-    "hint": "新安装不必填这里：在私聊里发送 companion_bind 即可绑定会话对象，身份由 Bot 登录号与所选人格自动派生。这一段只为兼容已填过的安装保留——填了就按填的走，留空则由引导派生。",
+    "hint": "旧版兼容设置。新安装请在账号与会话中添加目标和人格映射。",
     "type": "object",
     "invisible": true,
     "items": {
@@ -115,10 +101,9 @@
     }
   },
   "multi_host": {
-    "description": "账号与会话（由小屋管理）",
-    "hint": "账号、原生人格、私聊／群聊窗口及其绑定关系请在「陪伴小屋 → 账号与会话」管理。此处配置自动隐藏但仍由插件读取。",
+    "description": "账号与会话",
+    "hint": "先添加目标和对应逻辑 Bot 的人格映射，再启用接管。保存后重载插件。companion_bind 可在聊天中显示当前身份资料。",
     "type": "object",
-    "invisible": true,
     "items": {
       "enabled": {
         "description": "启用 V2 接管",
@@ -283,7 +268,7 @@
     "items": {
       "provider_id": {
         "description": "插件任务模型 Provider",
-        "hint": "后台维护默认使用此模型。回复与主动消息默认跟随对应 AstrBot 会话的对话模型；陪伴小屋中明确设置的任务模型优先。",
+        "hint": "后台维护默认使用此模型。回复与主动消息默认跟随对应 AstrBot 会话的对话模型；AstrBot 插件配置中明确设置的任务模型优先。",
         "_special": "select_provider",
         "type": "string",
         "default": ""
@@ -357,7 +342,7 @@
   },
   "segmentation": {
     "description": "回复｜文字分段",
-    "hint": "默认采用 V1 当前全局分段配置：按分段词拆分，最短 5 字、最多 5 条、500 字以内自动分段；模型边界默认关闭。已保存的会话设置优先。分段节奏与清理词在陪伴小屋的表达页配置。",
+    "hint": "默认采用 V1 当前全局分段配置：按分段词拆分，最短 5 字、最多 5 条、500 字以内自动分段；模型边界默认关闭。已保存的会话设置优先。分段节奏与清理词在AstrBot 插件配置的表达页配置。",
     "type": "object",
     "items": {
       "streaming_mode": {
@@ -669,7 +654,6 @@
   "poke": {
     "description": "互动｜戳一戳",
     "hint": "默认关闭。仅响应已配置目标对当前 Bot 的 OneBot 戳一戳；发送沿用该目标已认证的 OneBot 通道及关系权限。通知按账号、目标、发送者和秒级时间去重；同一秒内重复戳会合并。未知发送结果不会自动重试。",
-    "invisible": true,
     "type": "object",
     "items": {
       "enabled": {
@@ -747,7 +731,7 @@
       },
       "enable_daily_token_soft_limit": {
         "description": "每日 Token 软限额默认开关",
-        "hint": "默认关闭。只延后可选后台任务，普通回复不受影响。可在陪伴小屋治理设置里修改全局开关；全局关闭后，旧角色开关不能重新开启限额。这里的值用于未保存全局设置的数据根。",
+        "hint": "默认关闭。只延后可选后台任务，普通回复不受影响。可在AstrBot 插件配置治理设置里修改全局开关；全局关闭后，旧角色开关不能重新开启限额。这里的值用于未保存全局设置的数据根。",
         "type": "bool",
         "default": false
       },
@@ -836,10 +820,9 @@
     }
   },
   "weather": {
-    "description": "天气数据源（由陪伴小屋管理）",
-    "hint": "在陪伴小屋的天气感知区管理数据源、专属 API Host 和 JWT/API Key，或填写 Ed25519 私钥与凭据/项目 ID 自动签发；凭据不进入角色配置导出。",
+    "description": "天气数据源（由AstrBot 插件配置管理）",
+    "hint": "在AstrBot 插件配置的天气感知区管理数据源、专属 API Host 和 JWT/API Key，或填写 Ed25519 私钥与凭据/项目 ID 自动签发；凭据不进入角色配置导出。",
     "type": "object",
-    "invisible": true,
     "items": {
       "provider": {
         "description": "实况天气源",
@@ -897,10 +880,9 @@
     }
   },
   "service_balance": {
-    "description": "服务余额（由陪伴小屋管理）",
-    "hint": "仅保存由管理员在「陪伴小屋 → 此刻，对话能读到什么 → 余额感知」配置的 NewAPI 来源。敏感令牌不会由页面回显。",
+    "description": "服务余额（由AstrBot 插件配置管理）",
+    "hint": "仅保存由管理员在「AstrBot 插件配置 → 此刻，对话能读到什么 → 余额感知」配置的 NewAPI 来源。敏感令牌不会由页面回显。",
     "type": "object",
-    "invisible": true,
     "items": {
       "url": {
         "description": "NewAPI 地址",
@@ -997,16 +979,64 @@
       }
     }
   },
-  "legacy": {
-    "description": "兼容｜从 V1 迁移数据",
-    "hint": "首次从 V1 换到 V2 时用。V1 的数据留在原来的插件数据目录里，这里填它的绝对路径（例如 …/data/plugin_data/astrbot_plugin_private_companion）。留空则按 V2 数据目录的同级目录自动寻找 V1。迁移是只读 V1、单向写入 V2：过程中不会修改或删除 V1 的任何文件，所以可以先试算几遍再决定。实际执行在「陪伴小屋 → 开始使用」的最后一步完成。",
+  "core_preferences": {
+    "description": "核心偏好（高级）",
+    "hint": "配置记忆、主动联系、角色生活、表达等核心功能。字段、默认值与层级见分支 docs/LITE_CONFIGURATION.md。保存后重载；空列表保留现有偏好。",
     "type": "object",
     "items": {
-      "v1_root": {
-        "description": "V1 数据目录（绝对路径）",
-        "hint": "只在你主动检查并确认迁移时读取。留空时按 …/plugin_data/astrbot_plugin_private_companion 与 V2 数据目录的同级位置查找；V1 只读，迁移结果写入当前 V2 目标。",
-        "type": "text",
-        "default": ""
+      "entries": {
+        "description": "偏好条目",
+        "type": "template_list",
+        "default": [],
+        "templates": {
+          "core_preference": {
+            "name": "核心偏好",
+            "items": {
+              "group_id": {
+                "description": "配置组",
+                "type": "string",
+                "default": "proactive.contact"
+              },
+              "layer": {
+                "description": "生效范围",
+                "type": "string",
+                "options": [
+                  "installation",
+                  "role",
+                  "relationship",
+                  "window",
+                  "scope"
+                ],
+                "default": "installation",
+                "hint": "每组允许的范围见字段参考。installation 对整个安装生效；其他范围需填写目标与角色。"
+              },
+              "target_id": {
+                "description": "目标 ID",
+                "type": "string",
+                "default": "",
+                "hint": "与账号与会话中的 target_id 一致。installation 范围留空。"
+              },
+              "role_id": {
+                "description": "角色 ID",
+                "type": "string",
+                "default": "",
+                "hint": "与对应人格映射的 role_id 一致。installation 范围留空。"
+              },
+              "values": {
+                "description": "设置值（JSON 对象）",
+                "type": "text",
+                "default": "{}",
+                "hint": "只填写需要修改的字段。填写完整字段 ID，例如 {\"proactive.contact.enabled\": true}；准确字段以参考文档为准。"
+              },
+              "reset_to_inherit": {
+                "description": "恢复继承的字段 ID",
+                "type": "list",
+                "default": [],
+                "hint": "显式移除这些字段的覆盖值。不要与设置值中的字段重叠；不支持恢复继承的配置组会提示错误。"
+              }
+            }
+          }
+        }
       }
     }
   }
