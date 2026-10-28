@@ -2,7 +2,7 @@ name: astrbot_plugin_private_companion
 display_name: 我会永远陪着你 Lite
 author: menglimi
 version: 7.0.0+lite
-repo: https://github.com/menglimi/astrbot_plugin_private_companion
+repo: https://github.com/menglimi/astrbot_plugin_private_companion_lite
 description: 7.0.0lite 核心陪伴版，保留聊天、记忆、生活、日程、主动联系与语音。配置由 AstrBot 插件配置页管理，不包含七项拓展能力和陪伴小屋。
 desc: 轻量陪伴版，保留核心对话与生活记忆，通过 AstrBot 配置页管理。
 help: |
