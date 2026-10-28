@@ -239,7 +239,7 @@ test('the routing matrix lists every registered task with its provider', async (
   assert.match(node.innerHTML, /任务/);
   assert.match(node.innerHTML, /对话回复/);
   assert.match(node.innerHTML, /记忆整理/);
-  assert.match(node.innerHTML, /2<\/strong><span>可用模型提供方/);
+  assert.match(node.innerHTML, /2<\/b><span>可用模型/);
   assert.match(node.innerHTML, /前台/);
   assert.doesNotMatch(node.innerHTML, /保存本任务/);
 });
@@ -250,6 +250,7 @@ test('loaded AstrBot providers are immediately available without a registration 
   page.mount(node);
   requests[0].resolve(status());
   await flush();
+  node.click('[data-model-sub]', {modelSub: 'cfg'});
 
   assert.match(node.innerHTML, /<option value="secondary"/);
   assert.doesNotMatch(node.innerHTML, /模型通道|data-pool-/);
@@ -276,6 +277,7 @@ test('switching a provider inline raises one queued change and posting saves tha
   page.mount(node);
   requests[0].resolve(status());
   await flush();
+  node.click('[data-model-sub]', {modelSub: 'cfg'});
   node.change('[data-model-field]', {modelField: 'provider', modelKind: 'memory.reflect', value: 'secondary'});
   assert.match(node.innerHTML, /1<\/b> 项改动待保存/);
   node.click('[data-model-action]', {modelAction: 'save-one', modelKind: 'memory.reflect'});
@@ -295,6 +297,7 @@ test('multi-select assigns one provider to several tasks and keeps capability mi
   page.mount(node);
   requests[0].resolve(status());
   await flush();
+  node.click('[data-model-sub]', {modelSub: 'cfg'});
   node.click('[data-model-pick]', {modelPick: 'conversation.reply'});
   node.click('[data-model-pick]', {modelPick: 'memory.reflect'});
   assert.match(node.innerHTML, /已选 <strong>2<\/strong> 项任务/);
@@ -311,6 +314,7 @@ test('restoring inheritance resets explicit fields through the reset list', asyn
   explicit.tasks[0].fields.provider = {value: 'secondary', inherited_value: 'primary', source: 'window', inherited_source: 'installation', explicit: true};
   requests[0].resolve(explicit);
   await flush();
+  node.click('[data-model-sub]', {modelSub: 'cfg'});
   node.click('[data-model-pick]', {modelPick: 'conversation.reply'});
   node.click('[data-model-action]', {modelAction: 'inherit'});
   assert.match(node.innerHTML, /已把 1 项任务改为跟随上级配置/);
@@ -328,6 +332,7 @@ test('the precise editor keeps provider filtering compact and localizes capabili
   page.mount(node);
   requests[0].resolve(status());
   await flush();
+  node.click('[data-model-sub]', {modelSub: 'cfg'});
   assert.doesNotMatch(node.innerHTML, /class="model-mlgd"/);
   assert.match(node.innerHTML, /data-model-provider-filter/);
   assert.match(node.innerHTML, /主模型提供方/);
@@ -395,6 +400,7 @@ test('a lower-capacity provider adjusts the draft output limit before saving', a
   constrained.providers[1].max_output_tokens = 2048;
   requests[0].resolve(constrained);
   await flush();
+  node.click('[data-model-sub]', {modelSub: 'cfg'});
   node.change('[data-model-field]', {modelField: 'provider', modelKind: 'memory.reflect', value: 'secondary'});
   assert.match(node.innerHTML, /输出上限已调整为 2048/);
   node.click('[data-model-action]', {modelAction: 'save-one', modelKind: 'memory.reflect'});
@@ -432,6 +438,7 @@ test('an uncertain save keeps its original operation and blocks further edits un
   page.mount(node);
   requests[0].resolve(status());
   await flush();
+  node.click('[data-model-sub]', {modelSub: 'cfg'});
   node.change('[data-model-field]', {modelField: 'provider', modelKind: 'memory.reflect', value: 'secondary'});
   node.click('[data-model-action]', {modelAction: 'save-one', modelKind: 'memory.reflect'});
   const first = requests.find(request => request.method === 'POST');
@@ -472,6 +479,7 @@ test('a bridge timeout automatically re-sends the same idempotent save once', as
   page.mount(node);
   requests[0].resolve(status());
   await flush();
+  node.click('[data-model-sub]', {modelSub: 'cfg'});
   node.change('[data-model-field]', {modelField: 'provider', modelKind: 'memory.reflect', value: 'secondary'});
   node.click('[data-model-action]', {modelAction: 'save-one', modelKind: 'memory.reflect'});
   const first = requests.find(request => request.method === 'POST');
@@ -506,13 +514,17 @@ test('switching to the voice tab lazily loads, saves, and plays a synthesized sa
   await flush();
   assert.match(node.innerHTML, /语音模型/);
   assert.match(node.innerHTML, /按语种配置语音合成/);
+  assert.match(node.innerHTML, /私聊 \/ 群聊 TTS 总览/);
+  assert.match(node.innerHTML, /data-voice-matrix-lang="zh"/);
   node.change('[data-voice-provider]', {value: 'tts-live'});
   node.change('[data-voice-channel]', {voiceChannel: 'private', value: 'tts-live'});
+  node.change('[data-voice-channel]', {voiceChannel: 'group', voiceMatrixLang: 'en', value: 'tts-live'});
   node.click('[data-voice-save]');
   const post = requests.find(r => r.method === 'POST' && r.route === 'model/voice/save');
   assert.ok(post, 'voice save should POST to model/voice/save');
   assert.equal(post.values.changes.voice_ja_provider_id, 'tts-live');
   assert.equal(post.values.changes.voice_private_ja_provider_id, 'tts-live');
+  assert.equal(post.values.changes.voice_group_en_provider_id, 'tts-live');
   post.resolve({...voice, languages: voice.languages.map(item => item.k === 'ja' ? {...item, bind: 'tts-live'} : item)});
   await flush();
   assert.match(node.innerHTML, /语音配置已保存/);
@@ -734,6 +746,9 @@ test('image page separates generation and editing model queues and saves paramet
   assert.match(node.innerHTML, /<details class="model-img-route-details"><summary data-img-route-expand="online:primary"/);
   node.click('[data-img-route-expand]', {imgRouteExpand: 'online:primary'});
   assert.match(node.innerHTML, /文生图与改图/);
+  assert.match(node.innerHTML, /model-img-route-meta/);
+  assert.match(node.innerHTML, /model-img-route-toggle/);
+  assert.match(node.innerHTML, /展开配置|收起配置/);
   assert.match(node.innerHTML, /data-img-endpoint-test="primary"/,
     'saved enabled online models expose a real generation test');
   assert.equal((node.innerHTML.match(/class="model-imgconfig"/g) || []).length, 1,
@@ -928,6 +943,7 @@ test('quick config fans a slot provider out to every task via model/configure', 
   page.mount(node);
   requests[0].resolve(status());
   await flush();
+  node.click('[data-model-sub]', {modelSub: 'cfg'});
   node.click('[data-model-cm]', {modelCm: 'quick'});
   assert.match(node.innerHTML, /覆盖/);
   node.change('[data-model-slot]', {modelSlot: '对话', value: 'secondary'});
@@ -947,6 +963,7 @@ test('quick config saves both image tasks sequentially from the same page snapsh
   h.page.mount(node);
   h.requests[0].resolve(data);
   await flush();
+  node.click('[data-model-sub]', {modelSub: 'cfg'});
   node.change('[data-model-slot]', {modelSlot: '对话', value: 'secondary'});
   node.click('[data-model-slot-apply]', {modelSlotApply: '对话'});
   for (const item of data.tasks) {
@@ -1320,6 +1337,36 @@ test('search service binds and saves an AstrBot DeepSeek Provider id', async () 
   assert.match(node.innerHTML, /后续搜索立即生效/);
   assert.equal(page.isDirty(), false);
   page.unmount();
+});
+
+test('Laya local page explains CPU-only torch and disables the broken test', async () => {
+  const {page, requests, root} = harness();
+  const node = root();
+  page.mount(node);
+  requests[0].resolve(status());
+  await flush();
+  node.click('[data-model-tab]', {modelTab: 'laya'});
+  requests.find(item => item.method === 'GET' && item.route === 'model/laya').resolve({
+    enabled: false, mode: 'local', endpoint: '', default_model: 'multilingual',
+    api_key_set: false, timeout_seconds: 20, followup_confidence_threshold: 0,
+    package_installed: true, package_version: '0.4.0',
+    decision_fields: {turn_state: true, action: true, reply_intent: true, reply_style: true,
+      reply_form: true, segment_mode: true, tool_need: true},
+    model_cache_ready: true, model_cache_path: 'C:/cache/huggingface/hub',
+    local_runtime_state: 'gpu_unavailable', torch_version: '2.14.1+cpu',
+    cuda_version: '', cuda_available: false,
+    python_executable: 'C:/AstrBot/python.exe',
+    install_command: "& 'C:/AstrBot/python.exe' -m pip install 'laya==0.4.0'",
+    remote_install_command: "& 'C:/AstrBot/python.exe' -m pip install 'laya[serve]==0.4.0'",
+    remote_start_command: "$env:LAYA_DEFAULT_MODEL='multilingual'; & 'C:/AstrBot/python.exe' -m laya.serve",
+    revision: 'laya-cpu'});
+  requests.find(item => item.method === 'GET' && item.route === 'model/laya/logs').resolve({events: []});
+  await flush();
+  assert.match(node.innerHTML, /CUDA 不可用/);
+  assert.match(node.innerHTML, /2\.14\.1\+cpu/);
+  assert.match(node.innerHTML, /安装与驱动匹配的 CUDA 版 PyTorch/);
+  assert.match(node.innerHTML, /data-laya-test[^>]*disabled/);
+  assert.doesNotMatch(node.innerHTML, /下载并验证模型[^<]*<\/button>/);
 });
 
 test('Laya page exposes official local install, first-run download, and SystemOne remote setup', async () => {

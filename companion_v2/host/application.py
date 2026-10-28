@@ -480,6 +480,8 @@ class CompanionApplication:
                                                 role_state=self.role_state, weather_port=weather_port,
                                                 weather_alert_port=weather_alert_port, balance_port=balance_port,
                                                 news_port=news_port, screen_peek=self.screen_peek, wake_port=wake_port,
+                                                health_settings=lambda context, at: self.perception_settings.capture(
+                                                    context, at)["settings"],
                                                 notify=self.notify)
         self.proactive.schedule = self.contact_schedule
         self.role_reader.attach(self.gateway, self.role_reading, require_running=self.require_running,
@@ -944,7 +946,7 @@ class CompanionApplication:
                     deadline = min(deadline, journal_deadline) if deadline else journal_deadline
                 more_background = self.background.advance() or more_background
                 await asyncio.sleep(0)
-                self.contact_schedule.advance()
+                await self.contact_schedule.advance_async()
                 await asyncio.sleep(0)
                 if loop.time() >= next_wal_checkpoint:
                     checkpoint = getattr(self.runtime, "checkpoint_passive", None)

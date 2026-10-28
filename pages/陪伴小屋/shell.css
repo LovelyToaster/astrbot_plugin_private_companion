@@ -433,7 +433,7 @@
 #homeShell[data-away="true"] .stage-region .voxel-room { pointer-events: none; }
 #homeShell[data-away="true"] .stage-region .room-stage { cursor: pointer; }
 #homeShell[data-away="true"] .stage-region .room-stage::after {
-  content: "鍥炲埌灏忓眿";
+  content: "回到小屋";
   position: absolute;
   right: var(--sp-2);
   bottom: var(--sp-2);

@@ -26,6 +26,8 @@ from .calendar_events import CalendarContactEvents
 from .date_events import DateContactEvents
 from .events import ActivityContactEvents
 from .greetings import GreetingContactEvents
+from .health_events import HealthContactEvents
+from .sleep_context import from_health_source
 from .growth_events import GrowthContactEvents
 from .journal_events import JournalContactEvents
 from .meal_events import MealContactEvents
@@ -84,7 +86,7 @@ class ContactSchedule:
     def __init__(self, contacts, messages, *, notify, role_life=None, role_growth=None, role_journal=None,
                  calendar=None, relationships=None, role_state=None, weather_port=None,
                  weather_alert_port=None, balance_port=None, news_port=None, screen_peek=None,
-                 wake_port=None):
+                 wake_port=None, health_source=None, health_settings=None):
         self.contacts, self.messages, self.notify = contacts, messages, notify
         self.tasks, self.runtime = contacts.tasks, contacts.runtime
         self.screen_peek = screen_peek
@@ -93,6 +95,8 @@ class ContactSchedule:
                             if wake_port is not None else None)
         self._maintenance_contexts = {}
         self._workers, self._cursor, self._native_cursor, self._closed = {}, 0, 0, False
+        self._advancing = False
+        self._planning = None
         self._judges = {}
         self.rhythm = ContactRhythm(contacts.runtime)
         self.events = ActivityContactEvents(contacts, role_life) if role_life is not None else None
@@ -102,7 +106,9 @@ class ContactSchedule:
         self.reminiscence_events = (ReminiscenceContactEvents(contacts, relationships)
                                     if relationships is not None else None)
         self.date_events = DateContactEvents(contacts, messages)
-        self.greeting_events = GreetingContactEvents(contacts, role_state)
+        self.greeting_events = GreetingContactEvents(contacts, role_state, health_source)
+        self.health_source = health_source
+        self.health_events = HealthContactEvents(contacts, health_source, health_settings)
         self.meal_events = MealContactEvents(contacts)
         self.weather_events = WeatherContactEvents(contacts, role_state, weather_port) if role_state is not None else None
         self.weather_change_events = WeatherChangeContactEvents(
@@ -352,7 +358,8 @@ class ContactSchedule:
                          "reminiscence_event", "date_event",
                          "meal_event", "weather_event", "weather_change_event", "official_alert_event",
                          "balance_event", "news_event", "screen_event", "greeting_event", "burst_event",
-                         "relationship_event", "followup_event", "open_loop_event", "morning_event"}
+                         "relationship_event", "followup_event", "open_loop_event", "morning_event",
+                         "health_event"}
         rhythm_event_markers = event_markers - {"relationship_event"}
         if current.get("reanchored"):
             # The latest completed conversation took over. Keep the original
@@ -419,6 +426,8 @@ class ContactSchedule:
             if self.official_alert_events is None:
                 raise TaskError("contact_official_alert_unavailable", "official alert needs its original producer")
             self.official_alert_events.validate(context, origin["official_alert_event"], at)
+        if "health_event" in origin:
+            self.health_events.validate(context, origin["health_event"], at)
         if "balance_event" in origin:
             self.balance_events.validate(context, origin["balance_event"], at)
         if "news_event" in origin:
@@ -449,6 +458,11 @@ class ContactSchedule:
         self.contacts._adopt(context, preferences)
         if not preferences.values["automatic_enabled"]:
             self._note_window(context, row, at, "settings", "skipped", "automatic_contact_disabled")
+            return None
+        sleep = from_health_source(self.health_source, at)
+        if sleep is not None and sleep.quiet_until > at:
+            self._note_window(context, row, at, "sleep", "skipped", "sleep_wake_grace",
+                              next_at=sleep.morning_opened_at)
             return None
         origin, batch, event = self._origin(context, row["batch_id"], at)
         first = max(event.received_at, datetime.fromisoformat(batch["created_at"])) + timedelta(
@@ -512,12 +526,27 @@ class ContactSchedule:
                     reason_code += ":" + str(diagnostic["confidence"])
                 self._note_window(context, row, at, "morning", "skipped", reason_code[:96],
                                   purpose="greeting", next_at=diagnostic.get("next_at"))
+        if (hour_allowed and sleep is not None
+                and sleep.morning_opened_at <= at < sleep.morning_expires_at):
+            candidate = self.health_events.select(context, preferences, at)
+            if candidate is not None:
+                opportunity, intents, marker = candidate
+                intents = tuple(replace(intent, thought=replace(intent.thought, evidence=EvidenceSnapshot(
+                    context.scope, at, (event.source, *intent.thought.evidence.sources)))) for intent in intents)
+                return context, opportunity, intents, batch["role_instruction"], {**origin, "health_event": marker}
         candidate = self.greeting_events.select(context, preferences, at, interaction=interaction)
         if candidate is not None:
             opportunity, intents, marker = candidate
             intents = tuple(replace(intent, thought=replace(intent.thought, evidence=EvidenceSnapshot(
                 context.scope, at, (event.source,)))) for intent in intents)
             return context, opportunity, intents, batch["role_instruction"], {**origin, "greeting_event": marker}
+        if hour_allowed:
+            candidate = self.health_events.select(context, preferences, at)
+            if candidate is not None:
+                opportunity, intents, marker = candidate
+                intents = tuple(replace(intent, thought=replace(intent.thought, evidence=EvidenceSnapshot(
+                    context.scope, at, (event.source, *intent.thought.evidence.sources)))) for intent in intents)
+                return context, opportunity, intents, batch["role_instruction"], {**origin, "health_event": marker}
         if hour_allowed and self.events is not None:
             candidate, more = self.events.select(context, preferences, at)
             candidate = self._share_candidate(context, preferences, candidate)
@@ -1415,9 +1444,10 @@ class ContactSchedule:
             AND NOT EXISTS (SELECT 1 FROM conversation_flows newer WHERE newer.route_key = f.route_key AND newer.sequence > f.sequence)
             ORDER BY f.sequence LIMIT 16""", (cursor,))
 
-    def advance(self):
+    def _begin_tick(self):
+        """Read the tick's bounded input set; no candidate source is evaluated here."""
         if self._closed:
-            return
+            return None
         now = self.tasks.now()
         for context in tuple(self._maintenance_contexts.values()):
             try:
@@ -1440,7 +1470,7 @@ class ContactSchedule:
         require(self.tasks.check_generation())
         if CONTACT_KIND not in self.contacts.gateway.router.profiles:
             self._note_coordinator(self.tasks.now(), "blocked", "contact_model_unregistered")
-            return
+            return None
         held = self.runtime.read_one("SELECT COUNT(*) FROM execution_attempts WHERE lane = 'background' AND slot_held = 1", ())[0]
         available = self.tasks.limits.background_slots - held - len(self._workers) - len(self._judges)
         self._advance_judges(self.tasks.now(), max(0, available))
@@ -1448,13 +1478,12 @@ class ContactSchedule:
         available = self.tasks.limits.background_slots - held - len(self._workers) - len(self._judges)
         if available <= 0:
             self._note_coordinator(self.tasks.now(), "blocked", "background_capacity_exhausted")
-            return
+            return None
         retained = self.runtime.read_one("SELECT COUNT(*) FROM execution_tasks", ())[0]
         if retained >= self.tasks.limits.retained_tasks:
             self._note_coordinator(self.tasks.now(), "blocked", "task_storage_full")
-            return
-        rows = self._legacy_rows(self._cursor)
-        legacy_count = len(rows)
+            return None
+        legacy_rows = self._legacy_rows(self._cursor)
         from companion_v2.conversation.native_turns import project, turns_available
         native_rows = self.runtime.read_all("""SELECT n.rowid AS sequence, n.* FROM conversation_native_turns n
             WHERE n.rowid > ? AND json_extract(n.context_json, '$.audience.scope.kind') = 'private'
@@ -1463,75 +1492,131 @@ class ContactSchedule:
                 WHERE newer.context_key = n.context_key
                 AND (newer.observed_at > n.observed_at OR newer.observed_at = n.observed_at AND newer.rowid > n.rowid))
             ORDER BY n.rowid LIMIT 16""", (self._native_cursor,)) if turns_available(self.runtime) else ()
-        rows = (*rows, *(project(row) for row in native_rows))
+        rows = (*legacy_rows, *(project(row) for row in native_rows))
+        return now, rows, available, len(legacy_rows), len(native_rows)
+
+    def _plan_one(self, row, now):
+        """Evaluate one candidate off the write transaction."""
+        if self._closed or row["origin_key"] in self._workers:
+            return None
+        if self._peek(row, now):
+            context = TaskContext.restore(json.loads(row["context_json"]))
+            self._note_window(context, row, now, "sources", "pending", "screen_observation_pending")
+            return None
+        return self._plan(row, now)
+
+    def _note_plan_error(self, row, now, error):
+        context = TaskContext.restore(json.loads(row["context_json"]))
+        if error.code == "contact_conversation_changed":
+            return
+        self._note_window(context, row, now, "validation", "failed", error.code)
+        if error.code in ("supervisor_fenced", "supervisor_generation_conflict"):
+            raise error
+
+    def _activate_plan(self, row, plan, available, now):
+        context, _, intents, _, origin = plan
+        purpose = intents[0].purpose if intents else None
+        circuit_until = self.contacts.platform_circuit.cooldown_until(context, at=now)
+        if circuit_until is not None:
+            self._note_window(context, row, now, "delivery_admission", "skipped", "platform_circuit_open",
+                              purpose=purpose, next_at=circuit_until)
+            return available
+        busy_until = self._busy_hold(context, origin, now)
+        if busy_until is not None:
+            self._note_window(context, row, now, "busy_gate", "skipped", "conversation_busy",
+                              purpose=purpose, next_at=busy_until)
+            return available
+        sleep_until = self._sleep_hold(context, origin, now)
+        if sleep_until is not None:
+            self._note_window(context, row, now, "rest_gate", "skipped", "role_sleeping",
+                              purpose=purpose, next_at=sleep_until)
+            return available
+        if row["origin_key"] in self._workers:
+            return available
+        worker = asyncio.create_task(self._run(plan), name="companion:automatic-contact:" + row["origin_key"])
+        self._workers[row["origin_key"]] = worker
+        self._note_window(context, row, now, "task_queue", "queued", "candidate_queued", purpose=purpose)
+        worker.add_done_callback(lambda done: self.notify())
+        return available - 1
+
+    def _row_cursor(self, row):
+        if isinstance(row, dict) and row.get("execution_path") == "astrbot_core":
+            self._native_cursor = row["sequence"]
+        else:
+            self._cursor = row["sequence"]
+
+    def advance(self):
+        # Compatibility path for tests and synchronous host recovery.
+        prepared = self._begin_tick()
+        if prepared is None:
+            return
+        now, rows, available, legacy_count, native_count = prepared
         for row in rows:
-            if isinstance(row, dict) and row.get("execution_path") == "astrbot_core":
-                self._native_cursor = row["sequence"]
-            else:
-                self._cursor = row["sequence"]
-            if row["origin_key"] in self._workers:
-                continue
-            now = self.tasks.now()
-            if self._peek(row, now):
-                context = TaskContext.restore(json.loads(row["context_json"]))
-                self._note_window(context, row, now, "sources", "pending", "screen_observation_pending")
-                continue
+            if self._closed or available <= 0:
+                break
+            self._row_cursor(row)
             try:
-                with self.runtime.transaction():
-                    plan = self._plan(row, now)
+                plan = self._plan_one(row, now)
             except TaskError as error:
-                context = TaskContext.restore(json.loads(row["context_json"]))
-                if error.code == "contact_conversation_changed":
-                    # 这一行已被更新的一轮私聊取代：不写失败诊断。读取时
-                    # diagnostic_for 会按最新会话返回「等待新会话评估」。
-                    continue
-                self._note_window(context, row, now, "validation", "failed", error.code)
-                if error.code in ("supervisor_fenced", "supervisor_generation_conflict"):
-                    raise
+                self._note_plan_error(row, now, error)
                 continue
             if plan is not None:
-                context, _, intents, _, origin = plan
-                purpose = intents[0].purpose if intents else None
-                circuit_until = self.contacts.platform_circuit.cooldown_until(context, at=now)
-                if circuit_until is not None:
-                    self._note_window(context, row, now, "delivery_admission", "skipped", "platform_circuit_open",
-                                      purpose=purpose, next_at=circuit_until)
-                    continue
-                busy_until = self._busy_hold(context, origin, now)
-                if busy_until is not None:
-                    self._note_window(context, row, now, "busy_gate", "skipped", "conversation_busy",
-                                      purpose=purpose, next_at=busy_until)
-                    continue
-                sleep_until = self._sleep_hold(context, origin, now)
-                if sleep_until is not None:
-                    self._note_window(context, row, now, "rest_gate", "skipped", "role_sleeping",
-                                      purpose=purpose, next_at=sleep_until)
-                    continue
-                worker = asyncio.create_task(self._run(plan), name="companion:automatic-contact:" + row["origin_key"])
-                self._workers[row["origin_key"]] = worker
-                self._note_window(context, row, now, "task_queue", "queued", "candidate_queued", purpose=purpose)
-                worker.add_done_callback(lambda done: self.notify())
-                available -= 1
-                if available == 0:
-                    self._note_coordinator(self.tasks.now(), "running", "contact_schedule_running")
-                    return
+                available = self._activate_plan(row, plan, available, now)
         if legacy_count < 16:
             self._cursor = 0
-        if len(native_rows) < 16:
+        if native_count < 16:
             self._native_cursor = 0
         self._note_coordinator(self.tasks.now(), "running", "contact_schedule_running")
+
+    async def advance_async(self):
+        """Keep each source scan off AstrBot's event loop; activation stays on it."""
+        if self._closed or self._advancing:
+            return
+        self._advancing = True
+        try:
+            prepared = self._begin_tick()
+            if prepared is None:
+                return
+            now, rows, available, legacy_count, native_count = prepared
+            for row in rows:
+                if self._closed or available <= 0:
+                    break
+                self._row_cursor(row)
+                planning = asyncio.create_task(asyncio.to_thread(self._plan_one, row, now))
+                self._planning = planning
+                try:
+                    plan = await asyncio.shield(planning)
+                except TaskError as error:
+                    self._note_plan_error(row, now, error)
+                    continue
+                finally:
+                    if self._planning is planning and planning.done():
+                        self._planning = None
+                if self._closed:
+                    break
+                if plan is not None:
+                    available = self._activate_plan(row, plan, available, now)
+            if legacy_count < 16:
+                self._cursor = 0
+            if native_count < 16:
+                self._native_cursor = 0
+            self._note_coordinator(self.tasks.now(), "running", "contact_schedule_running")
+        finally:
+            self._advancing = False
+        self._planning = None
 
     @property
     def active_handles(self):
         return tuple("automatic-contact-" + key for key in self._workers) + tuple(
             "contact-judge-" + key for key in self._judges)
 
-    def cancel_running(self):
-        self._closed = True
-        for worker in tuple(self._workers.values()):
-            worker.cancel()
-        for worker in tuple(self._judges.values()):
-            worker.cancel()
+    def bind_health_source(self, source):
+        self.health_source = source
+        self.health_events.update_source(source)
+        if getattr(self, "greeting_events", None) is not None:
+            self.greeting_events.health_source = source
+
+    def _close_sources(self):
         if self.events is not None:
             self.events.close()
         if self.growth_events is not None:
@@ -1548,12 +1633,35 @@ class ContactSchedule:
             self.weather_change_events.close()
         if self.official_alert_events is not None:
             self.official_alert_events.close()
+        if getattr(self, "health_events", None) is not None:
+            self.health_events.close()
         self.balance_events.close()
         self.news_events.close()
         self.screen_events.close()
 
+    def cancel_running(self, *, close_sources=True):
+        self._closed = True
+        for worker in tuple(self._workers.values()):
+            worker.cancel()
+        for worker in tuple(self._judges.values()):
+            worker.cancel()
+        if close_sources:
+            self._close_sources()
+
     async def close(self):
-        self.cancel_running()
+        # Stop accepting work and cancel live tasks, but keep sources open until
+        # the in-flight planner has returned; a planning thread must never read a
+        # closed event source or storage connection.
+        self.cancel_running(close_sources=False)
+        planning = self._planning
+        if planning is not None and not planning.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(planning), timeout=5)
+            except asyncio.TimeoutError:
+                pass
+            except Exception:
+                pass
+        self._close_sources()
         workers = tuple(self._workers.values()) + tuple(self._judges.values())
         if workers:
             await asyncio.wait(workers, timeout=0.25)

@@ -156,6 +156,22 @@ window.CompanionWorkbench = (() => {
     || fallback;
   const icon = name => `<i data-lucide="${name}" aria-hidden="true"></i>`;
   let instanceSequence = 0;
+  /* Short-lived stale-while-revalidate cache for workbench reads.  Page
+     navigation often remounts the same configuration section; painting the
+     last successful snapshot immediately makes tab switches feel instant while
+     the background refresh still reconciles the edit token. */
+  const READ_CACHE = new Map();
+  const READ_CACHE_MS = 15000;
+  const readCache = key => {
+    const item = READ_CACHE.get(key);
+    if (!item || Date.now() - item.at > READ_CACHE_MS) { READ_CACHE.delete(key); return null; }
+    return JSON.parse(JSON.stringify(item.payload));
+  };
+  const writeCache = (key, payload) => {
+    if (READ_CACHE.size > 256) READ_CACHE.clear();
+    try { READ_CACHE.set(key, {at: Date.now(), payload: JSON.parse(JSON.stringify(payload))}); } catch {}
+  };
+  const clearReadCache = () => READ_CACHE.clear();
 
   /* === 字段契约：把后端 FieldDefinition 收敛成渲染所需的最小形状 === */
   function contract(name, definition, choices = null) {
@@ -380,6 +396,12 @@ window.CompanionWorkbench = (() => {
       if (policy.numericIds && words.some(word => !/^[0-9]+$/.test(word) || word.startsWith("0"))) return false;
       return true;
     }
+    if (item.input === "chips" && item.chipOptions?.mode === "multi") {
+      const options = item.chipOptions.options || [];
+      const parts = parseTagList(value);
+      return parts.length > 0 && parts.every(part => options.includes(part))
+        && new Set(parts).size === parts.length;
+    }
     if (item.input === "replacement-list") {
       const pairs = parseReplacementList(value);
       const policy = item.listPolicy || {};
@@ -452,7 +474,7 @@ window.CompanionWorkbench = (() => {
       return "<div class=\"wb-segmented\" role=\"radiogroup\" aria-label=\""
         + e(item.label || item.name) + "\">" + choices + "</div>";
     }
-    if (item.choices) {
+    if (item.choices && item.input !== "chips") {
       /* 枚举：空值是合法的「跟随上级」，所以不自动补一个选中项。
          草稿可能是数字（整数档位字段），选项键一定是字符串，比较前先归一。 */
       const selected = choiceKey(item, value);
@@ -683,17 +705,20 @@ window.CompanionWorkbench = (() => {
     if (item.kind === "text" && item.input === "chips") {
       const options = item.chipOptions?.options || [];
       const multi = item.chipOptions?.mode === "multi";
+      const labels = item.chipOptions?.labels || {};
       const current = String(value ?? "").trim();
       const parts = parseTagList(current);
       const chips = options.map(option => {
         const on = multi ? parts.includes(option) : current === option;
         return `<button type="button" class="wb-chip-opt${on ? " is-on" : ""}"`
-          + ` data-wb-chip="${e(item.name)}" data-wb-chip-value="${e(option)}"${dis}>${e(option)}</button>`;
+          + ` data-wb-chip="${e(item.name)}" data-wb-chip-value="${e(option)}"${dis}>${e(labels[option] || option)}</button>`;
       }).join("");
+      const field = item.chipOptions?.hideInput
+        ? `<input type="hidden" data-wb-field="${e(item.name)}" value="${e(value)}">`
+        : `<input type="text" data-wb-field="${e(item.name)}" value="${e(value)}"`
+          + ` aria-label="${e(item.label || item.name)}" placeholder="${e(item.chipOptions?.placeholder || "自定义…")}"${dis}>`;
       return `<div class="wb-chipset" data-wb-chipset="${e(item.name)}">`
-        + (chips ? `<div class="wb-chip-opts">${chips}</div>` : "")
-        + `<input type="text" data-wb-field="${e(item.name)}" value="${e(value)}"`
-        + ` aria-label="${e(item.label || item.name)}" placeholder="${e(item.chipOptions?.placeholder || "自定义…")}"${dis}></div>`;
+        + (chips ? `<div class="wb-chip-opts">${chips}</div>` : "") + field + `</div>`;
     }
     /* 词条小片：从顿号清单里逐项增删（爱好、标志性表达这类自由清单）。 */
     if (item.kind === "text" && item.input === "tags") {
@@ -953,6 +978,7 @@ window.CompanionWorkbench = (() => {
       visibility = {}, listFields = {}, chipOptions = {}, navigationLimit = 8,
       presentation = "", sectionTabPrefix = "", initialSection = null,
       mount: mountPoint, endpoint, order = null, pollMs = 0, query = null,
+      prefetch = null,
       audit = null, onStatus = null, scopeKey: scopeKeyOverride = null,
       /* 分组用一层继承链，但「值是谁共享的」不一定等于链上有没有角色层：
          主动联系偏好还有关系层，卡片右上角要说清这一点，所以允许分区声明自己的
@@ -1176,6 +1202,7 @@ window.CompanionWorkbench = (() => {
           value = response.data;
         }
         if (!value || typeof value !== "object" || Array.isArray(value)) throw error("invalid_response");
+        if (method !== "GET") clearReadCache();
         return value;
       } finally { clearTimeout(timer); }
     }
@@ -2148,15 +2175,27 @@ window.CompanionWorkbench = (() => {
       const previousDraft = state.draft;
       const previousConflicts = state.conflicts;
       const keepDraft = !options?.discardDraft && dirty();
+      const cacheKey = JSON.stringify([endpoint, group, query || null,
+        window.CompanionProduct?.scopeKey?.() || "",
+        window.CompanionProduct?.selection?.() || null]);
+      const prefetched = options?.prefetched && typeof options.prefetched === "object" ? options.prefetched : null;
+      const cached = prefetched || (options?.allowCache && !options?.force && !keepDraft && !state.pending
+        ? readCache(cacheKey) : null);
+      const usedCache = Boolean(cached);
       const ticket = ++state.ticket;
       state.loading = true;
       state.notice = state.status ? state.notice : "";
       paint();
       try {
         let payload, retried = false;
-        for (let retries = 0; ; retries += 1) {
+        if (cached) {
+          payload = cached;
+          writeCache(cacheKey, cached);
+        }
+        for (let retries = 0; !cached; retries += 1) {
           try {
             payload = await api("GET", endpoint, null, query || undefined);
+            writeCache(cacheKey, payload);
             break;
           } catch (problem) {
             if (ticket !== state.ticket) return;
@@ -2235,6 +2274,13 @@ window.CompanionWorkbench = (() => {
         if (onStatus) onStatus(value);
         if (state.pending) scheduleAutoRecovery(state.pending.operation_key, ticket);
         schedule();
+        if (usedCache && !prefetched) {
+          setTimeout(() => {
+            if (!state.busy && !state.loading && !state.dirty() && !state.pending) {
+              void refresh({...options, force: true});
+            }
+          }, 0);
+        }
       } catch (problem) {
         if (ticket !== state.ticket) return;
         /* 读取失败后不能继续把上一份配置当成当前真实状态展示。保留用户尚未
@@ -2423,7 +2469,7 @@ window.CompanionWorkbench = (() => {
       stop();
       if (!pollMs || !state.status || document.hidden) return;
       state.timer = setTimeout(() => {
-        if (!state.busy && !state.loading && !state.dirty()) void refresh();
+        if (!state.busy && !state.loading && !state.dirty()) void refresh({force:true});
         else schedule();
       }, pollMs);
     }
@@ -2447,7 +2493,14 @@ window.CompanionWorkbench = (() => {
           + `<span>当前对象没有可用的配置工作区。请先选择已初始化的私聊对象和角色。</span></p>`;
         return;
       }
-      void refresh();
+      if (typeof prefetch === "function") {
+        Promise.resolve().then(prefetch).then(payload => {
+          const mounted = mountPoint();
+          if (mounted && mounted.isConnected !== false) void refresh({prefetched: payload});
+        }).catch(() => { void refresh({allowCache:true}); });
+      } else {
+        void refresh({allowCache:true});
+      }
     }
 
     /* 宿主页面每次 render() 会整块重写 innerHTML，把本工作台的 DOM 一起冲掉。
